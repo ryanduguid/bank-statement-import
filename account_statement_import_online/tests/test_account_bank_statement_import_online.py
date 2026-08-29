@@ -103,14 +103,10 @@ class TestAccountBankAccountStatementImportOnline(common.TransactionCase):
     def test_pull_scheduled(self):
         self.provider.next_run = self.now - relativedelta(days=15)
         self._getExpectedStatements(0)
-        # _adjust_schedule() reads datetime.now(), not cls.now. Hold it at
-        # the pinned noon so a 00:00-00:59 UTC run does not cross midnight.
-        with mock.patch(
-            "odoo.addons.account_statement_import_online.models"
-            ".online_bank_statement_provider.datetime.now",
-            return_value=self.now,
-        ):
-            self.provider.with_context(step={"hours": 8})._scheduled_pull()
+        # next_run stays noon-aligned. _adjust_schedule() uses wall-clock
+        # datetime.now(), but a :00 slot never makes the 1-hour pull window
+        # cross midnight into a second daily statement.
+        self.provider.with_context(step={"hours": 8})._scheduled_pull()
         self._getExpectedStatements(1)
 
     def test_pull_skip_duplicates_by_unique_import_id(self):
