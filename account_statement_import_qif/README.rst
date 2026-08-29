@@ -103,6 +103,8 @@ Contributors
 
   - Pedro M. Baeza
 
+- Ryan Duguid (https://github.com/ryanduguid)
+
 Maintainers
 -----------
 

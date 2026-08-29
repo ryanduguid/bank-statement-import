@@ -2,14 +2,19 @@
 # Copyright 2015 Laurent Mignon <laurent.mignon@acsone.eu>
 # Copyright 2015 Ronald Portier <rportier@therp.nl>
 # Copyright 2016-2017 Tecnativa - Pedro M. Baeza
+# Copyright 2026 Ryan Duguid
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 
 import base64
+import re
 
 import dateutil.parser
 
 from odoo import api, models
 from odoo.exceptions import UserError
+
+# Numeric QIF dates in these countries use day/month/year.
+_QIF_DMY_COUNTRY_CODES = frozenset({"AU", "NZ", "GB", "IE", "ZA", "IN"})
 
 
 class AccountStatementImport(models.TransientModel):
@@ -18,6 +23,51 @@ class AccountStatementImport(models.TransientModel):
     @api.model
     def _check_qif(self, data_file):
         return data_file.strip().startswith(b"!Type:")
+
+    def _qif_detect_dayfirst_from_dates(self, date_strings):
+        """Return True/False when dates in the file have an unambiguous order.
+
+        QIF does not declare locale. ``08/07/2026`` is 8 July in Australia and
+        7 August in the US. A day or month number above 12 tells us which.
+        Year-first ISO values (first part > 31) are skipped; dateutil already
+        parses those independently of ``dayfirst``.
+        """
+        saw_dmy = False
+        saw_mdy = False
+        for raw in date_strings:
+            parts = [int(part) for part in re.findall(r"\d+", raw)]
+            if len(parts) < 2:
+                continue
+            first, second = parts[0], parts[1]
+            if first > 31:
+                continue
+            if first > 12:
+                saw_dmy = True
+            if 12 < second <= 31:
+                saw_mdy = True
+        if saw_dmy and not saw_mdy:
+            return True
+        if saw_mdy and not saw_dmy:
+            return False
+        return None
+
+    def _qif_lang_dayfirst(self):
+        lang_code = self.env.user.lang or self.env.company.partner_id.lang
+        if not lang_code:
+            return False
+        lang = self.env["res.lang"].search([("code", "=", lang_code)], limit=1)
+        date_format = lang.date_format or ""
+        day_pos = date_format.find("%d")
+        month_pos = date_format.find("%m")
+        return day_pos != -1 and month_pos != -1 and day_pos < month_pos
+
+    def _qif_dayfirst(self, date_strings):
+        detected = self._qif_detect_dayfirst_from_dates(date_strings)
+        if detected is not None:
+            return detected
+        if self._qif_lang_dayfirst():
+            return True
+        return self.env.company.country_id.code in _QIF_DMY_COUNTRY_CODES
 
     def _parse_file(self, data_file):
         if not self._check_qif(data_file):
@@ -37,13 +87,17 @@ class AccountStatementImport(models.TransientModel):
         total = 0
         if header in ("Bank", "CCard"):
             vals_bank_statement = {}
+            date_strings = [
+                line.strip()[1:] for line in data_list if line.strip()[:1] == "D"
+            ]
+            dayfirst = self._qif_dayfirst(date_strings)
             for line in data_list:
                 line = line.strip()
                 if not line:
                     continue
                 if line[0] == "D":  # date of transaction
                     vals_line["date"] = dateutil.parser.parse(
-                        line[1:], fuzzy=True
+                        line[1:], fuzzy=True, dayfirst=dayfirst
                     ).date()
                 elif line[0] == "T":  # Total amount
                     total += float(line[1:].replace(",", ""))

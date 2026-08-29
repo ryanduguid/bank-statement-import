@@ -7,3 +7,4 @@
   - Ronald Portier \<rportier@therp.nl\>
 - Tecnativa (<https://www.tecnativa.com>)
   - Pedro M. Baeza
+- Ryan Duguid (<https://github.com/ryanduguid>)
