@@ -206,6 +206,24 @@ class AccountStatementImport(models.TransientModel):
         return currency
 
     @api.model
+    def _find_bank_journal(self, account_number, account_field="sanitized_acc_number"):
+        journals = self.env["account.journal"]
+        field = f"bank_account_id.{account_field}"
+        domain = [("type", "=", "bank")]
+        exact = journals.search(domain + [(field, "=ilike", account_number)], limit=1)
+        if exact:
+            return exact
+        partial = journals.search(domain + [(field, "ilike", account_number)], limit=2)
+        if len(partial) > 1:
+            raise UserError(
+                self.env._(
+                    "More than one bank journal matches the file's account number. "
+                    "Use a complete account number to identify the journal."
+                )
+            )
+        return partial
+
+    @api.model
     def _match_journal(self, account_number, currency):
         company = self.env.company
         journal_obj = self.env["account.journal"]
@@ -223,17 +241,7 @@ class AccountStatementImport(models.TransientModel):
         else:
             sanitized_account_number = sanitize_account_number(account_number)
 
-            journal = journal_obj.search(
-                [
-                    ("type", "=", "bank"),
-                    (
-                        "bank_account_id.sanitized_acc_number",
-                        "ilike",
-                        sanitized_account_number,
-                    ),
-                ],
-                limit=1,
-            )
+            journal = self._find_bank_journal(sanitized_account_number)
             ctx_journal_id = self.env.context.get("journal_id")
             if journal and ctx_journal_id and journal.id != ctx_journal_id:
                 ctx_journal = journal_obj.browse(ctx_journal_id)

@@ -21,15 +21,17 @@ class AccountStatementImport(models.TransientModel):
         except ValueError:
             try:
                 with zipfile.ZipFile(BytesIO(data_file)) as data:
-                    currency = None
-                    account_number = None
-                    transactions = []
+                    grouped = {}
                     for member in data.namelist():
-                        currency, account_number, new = self._parse_file(
-                            data.open(member).read()
-                        )
-                        transactions.extend(new)
-                return currency, account_number, transactions
+                        parsed = self._parse_file(data.open(member).read())
+                        triplets = parsed if isinstance(parsed, list) else [parsed]
+                        for currency, account_number, statements in triplets:
+                            # Keep each member's own account and currency; only
+                            # members that share both are filed together.
+                            grouped.setdefault((currency, account_number), []).extend(
+                                statements
+                            )
+                return parser.group_statements(grouped)
             # pylint: disable=except-pass
             except (zipfile.BadZipFile, ValueError):
                 _logger.exception("BadZipfile exception")

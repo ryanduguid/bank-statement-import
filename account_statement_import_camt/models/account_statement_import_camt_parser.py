@@ -7,7 +7,7 @@ import re
 
 from lxml import etree
 
-from odoo import models
+from odoo import api, models
 
 
 class AccountStatementImportCamtParser(models.AbstractModel):
@@ -452,15 +452,32 @@ class AccountStatementImportCamtParser(models.AbstractModel):
             raise ValueError("Not a valid xml file, or not an xml file at all.")
         ns = root.tag[1 : root.tag.index("}")]
         self.check_version(ns, root)
-        statements = []
         currency = None
         account_number = None
+        grouped = {}
         for node in root[0][1:]:
             statement = self.parse_statement(ns, node)
             if len(statement["transactions"]):
-                if "currency" in statement:
-                    currency = statement.pop("currency")
-                if "account_number" in statement:
-                    account_number = statement.pop("account_number")
-                statements.append(statement)
-        return currency, account_number, statements
+                # A statement that names no currency or account keeps the last
+                # one seen; a statement that names a different one starts its
+                # own triplet so it cannot be filed against another account.
+                currency = statement.pop("currency", currency)
+                account_number = statement.pop("account_number", account_number)
+                grouped.setdefault((currency, account_number), []).append(statement)
+        return self.group_statements(grouped)
+
+    @api.model
+    def group_statements(self, grouped):
+        """Return one triplet per account, or a list when the file holds several.
+
+        The import wizard applies one journal to each triplet it receives, so
+        statements for different accounts or currencies must not share one.
+        """
+        if len(grouped) > 1:
+            return [
+                (currency, account_number, statements)
+                for (currency, account_number), statements in grouped.items()
+            ]
+        for (currency, account_number), statements in grouped.items():
+            return currency, account_number, statements
+        return None, None, []

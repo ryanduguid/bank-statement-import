@@ -106,3 +106,24 @@ class TestOfxFile(TransactionCase):
             }
         )
         bank_st.import_file_button()
+
+    def test_exact_acctid_precedes_substring(self):
+        exact = self.env["res.partner.bank"].search([("acctid", "=", "223456-X")])
+        exact.acctid = "1223456-X"
+        other = self.env["res.partner.bank"].create(
+            {
+                "acc_number": "SYNTHETIC-EXACT-ACCTID",
+                "acctid": "223456-X",
+                "partner_id": self.env.company.partner_id.id,
+            }
+        )
+        expected = self.env["account.journal"].create(
+            {
+                "name": "Exact ACCTID",
+                "code": "ACTX",
+                "type": "bank",
+                "bank_account_id": other.id,
+            }
+        )
+        actual = self.asi_model._find_bank_journal("223456X", "sanitized_acctid")
+        self.assertEqual(actual, expected)
