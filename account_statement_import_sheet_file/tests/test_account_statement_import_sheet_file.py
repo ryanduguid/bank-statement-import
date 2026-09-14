@@ -4,7 +4,11 @@
 # Copyright 2025 Jacques-Etienne Baudoux (BCIM) <je@bcim.be>
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 
+from datetime import datetime
 from decimal import Decimal
+from io import BytesIO
+
+from openpyxl import Workbook
 
 from odoo.exceptions import UserError
 from odoo.tools import float_round, mute_logger
@@ -13,6 +17,42 @@ from .common import Common
 
 
 class TestAccountStatementImportSheetFile(Common):
+    def test_xlsx_dates_numbers_empty_cells_and_offsets(self):
+        self.sample_statement_map.write(
+            {
+                "header_lines_skip_count": 2,
+                "offset_column": 1,
+                "footer_lines_skip_count": 1,
+                "skip_empty_lines": True,
+                "original_currency_column": False,
+                "original_amount_column": False,
+                "partner_name_column": False,
+                "bank_account_column": False,
+            }
+        )
+        workbook = Workbook()
+        for row in [
+            ["Title"],
+            ["Unused", "Date", "Amount", "Label"],
+            ["x", datetime(2026, 9, 1), 100, None],
+            [None, None, None, None],
+            ["x", datetime(2026, 9, 2), -12.5, "Fee"],
+            ["Footer"],
+        ]:
+            workbook.active.append(row)
+        with BytesIO() as stream:
+            workbook.save(stream)
+            lines = self.parser._parse_lines(
+                self.sample_statement_map, stream.getvalue(), "USD"
+            )
+        workbook.close()
+        self.assertEqual([line["amount"] for line in lines], [100, -12.5])
+        self.assertEqual(
+            [line["timestamp"] for line in lines],
+            [datetime(2026, 9, 1), datetime(2026, 9, 2)],
+        )
+        self.assertEqual([line["description"] for line in lines], ["", "Fee"])
+
     def test_import_csv_file(self):
         wizard = self._get_import_wizard("fixtures/sample_statement_en.csv")
         wizard.import_file_button()
