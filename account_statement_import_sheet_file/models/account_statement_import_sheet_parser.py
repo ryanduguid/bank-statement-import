@@ -11,8 +11,13 @@ import re
 from collections.abc import Iterable
 from datetime import datetime
 from decimal import Decimal
-from io import StringIO
+from io import BytesIO, StringIO
 from os import path
+from zipfile import BadZipFile
+
+from openpyxl import load_workbook
+from openpyxl.utils.exceptions import InvalidFileException
+from openpyxl.worksheet.worksheet import Worksheet
 
 from odoo import api, models
 from odoo.exceptions import UserError
@@ -48,7 +53,12 @@ class AccountStatementImportSheetParser(models.TransientModel):
         # prevent negative indexes
         if header_line > 0:
             header_line -= 1
-        if isinstance(csv_or_xlsx, tuple):
+        if isinstance(csv_or_xlsx, Worksheet):
+            header = [
+                str(cell.value).strip() if cell.value is not None else ""
+                for cell in csv_or_xlsx[header_line + 1]
+            ]
+        elif isinstance(csv_or_xlsx, tuple):
             header = [
                 str(value).strip() for value in csv_or_xlsx[1].row_values(header_line)
             ]
@@ -163,9 +173,21 @@ class AccountStatementImportSheetParser(models.TransientModel):
         They accept `mapping` and `data_file` arguments and return the parsed file.
         """
         return [
+            self._parse_data_openpyxl,
             self._parse_data_xlrd,
             self._parse_data_csv,
         ]
+
+    def _parse_data_openpyxl(self, mapping, data_file):
+        try:
+            with BytesIO(data_file) as stream:
+                workbook = load_workbook(stream, data_only=True)
+                sheet = workbook.worksheets[0]
+                workbook.close()
+                return sheet
+        except (BadZipFile, InvalidFileException):
+            _logger.debug("Failed decoding with openpyxl", exc_info=True)
+            return None
 
     def _parse_data_xlrd(self, mapping, data_file):
         try:
@@ -251,7 +273,9 @@ class AccountStatementImportSheetParser(models.TransientModel):
         csv_or_xlsx, data_file = data
 
         # Get the numbers of rows of the file
-        if isinstance(csv_or_xlsx, tuple):
+        if isinstance(csv_or_xlsx, Worksheet):
+            numrows = csv_or_xlsx.max_row
+        elif isinstance(csv_or_xlsx, tuple):
             numrows = csv_or_xlsx[1].nrows
         else:
             numrows = len(str(data_file.strip()).split("\\n"))
@@ -259,14 +283,19 @@ class AccountStatementImportSheetParser(models.TransientModel):
         label_line = mapping.header_lines_skip_count
         footer_line = numrows - mapping.footer_lines_skip_count
 
-        if isinstance(csv_or_xlsx, tuple):
+        if isinstance(csv_or_xlsx, tuple | Worksheet):
             rows = range(label_line, footer_line)
         else:
             rows = csv_or_xlsx
 
         lines = []
         for index, row in enumerate(rows, label_line):
-            if isinstance(csv_or_xlsx, tuple):
+            if isinstance(csv_or_xlsx, Worksheet):
+                values = [
+                    cell.value if cell.value is not None else ""
+                    for cell in csv_or_xlsx[row + 1][mapping.offset_column :]
+                ]
+            elif isinstance(csv_or_xlsx, tuple):
                 book = csv_or_xlsx[0]
                 sheet = csv_or_xlsx[1]
                 values = []
@@ -523,8 +552,8 @@ class AccountStatementImportSheetParser(models.TransientModel):
     def _parse_decimal(self, value, mapping):
         if isinstance(value, Decimal):
             return float(value)
-        elif isinstance(value, float):
-            return value
+        elif isinstance(value, int | float):
+            return float(value)
         thousands, decimal = mapping._get_float_separators()
         # Remove all characters except digits, thousands separator,
         # decimal separator, and signs
