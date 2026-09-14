@@ -14,22 +14,12 @@ class AccountStatementImport(models.TransientModel):
 
     @api.model
     def _match_journal(self, account_number, currency):
-        journal_obj = self.env["account.journal"]
-
         file_data = base64.b64decode(self.statement_file)
         if self._check_ofx(file_data):
             sanitized_account_number = sanitize_account_number(account_number)
 
-            journal = journal_obj.search(
-                [
-                    ("type", "=", "bank"),
-                    (
-                        "bank_account_id.sanitized_acctid",
-                        "ilike",
-                        sanitized_account_number,
-                    ),
-                ],
-                limit=1,
+            journal = self._find_bank_journal(
+                sanitized_account_number, account_field="sanitized_acctid"
             )
             journal_id = self.env.context.get("journal_id")
             if journal_id and journal.id != journal_id:

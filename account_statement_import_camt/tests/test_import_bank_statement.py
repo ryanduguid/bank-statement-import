@@ -6,8 +6,13 @@ import base64
 import difflib
 import pprint
 import tempfile
+import zipfile
+from copy import deepcopy
 from datetime import date
+from io import BytesIO
 from pathlib import Path
+
+from lxml import etree
 
 from odoo.tests.common import TransactionCase
 from odoo.tools.misc import file_path
@@ -82,6 +87,45 @@ class TestParserCommon(TransactionCase):
 
 class TestParser(TestParserCommon):
     """Tests for the camt parser itself."""
+
+    def test_mixed_accounts_and_currencies_keep_separate_groups(self):
+        path = file_path("account_statement_import_camt/tests/samples/test-camt053")
+        original = Path(path).read_bytes()
+        for field in ("account", "currency"):
+            changed = etree.fromstring(original)
+            statement = changed[0][1]
+            if field == "account":
+                account = statement.find("{*}Acct/{*}Id")
+                account[0].text = "SYNTHETIC-OTHER-ACCOUNT"
+            else:
+                currency = statement.find("{*}Acct/{*}Ccy")
+                if currency is None:
+                    currency = etree.SubElement(
+                        statement.find("{*}Acct"),
+                        f"{{{etree.QName(statement).namespace}}}Ccy",
+                    )
+                currency.text = "USD"
+                for element in statement.iter():
+                    if "Ccy" in element.attrib:
+                        element.set("Ccy", "USD")
+            mixed = etree.fromstring(original)
+            mixed[0].append(deepcopy(statement))
+            with self.subTest(field=field, format="XML"):
+                groups = self.parser.parse(etree.tostring(mixed))
+                self.assertIsInstance(groups, list)
+                self.assertEqual(len(groups), 2)
+                self.assertNotEqual(groups[0][:2], groups[1][:2])
+            stream = BytesIO()
+            with zipfile.ZipFile(stream, "w") as archive:
+                archive.writestr("first.xml", original)
+                archive.writestr("second.xml", etree.tostring(changed))
+            with self.subTest(field=field, format="ZIP"):
+                groups = self.env["account.statement.import"]._parse_file(
+                    stream.getvalue()
+                )
+                self.assertIsInstance(groups, list)
+                self.assertEqual(len(groups), 2)
+                self.assertNotEqual(groups[0][:2], groups[1][:2])
 
     def test_parse(self):
         self._do_parse_test("test-camt053", "golden-camt053.pydata")

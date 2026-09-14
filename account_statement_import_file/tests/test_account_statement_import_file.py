@@ -53,6 +53,23 @@ class TestAccountStatementImportFile(common.TransactionCase):
         with self.assertRaises(UserError):
             import_wizard._complete_stmts_vals(stmts_vals, self.journal_1, "1111111111")
 
+    def test_exact_account_precedes_substring(self):
+        self.bank_account.acc_number = "9333333333"
+        self.journal_2.bank_account_id = self.bank_account_2
+        journal = self.import_wizard._find_bank_journal("3333333333")
+        self.assertEqual(journal, self.journal_2)
+
+    def test_partial_account_must_be_unambiguous(self):
+        self.bank_account.acc_number = "9333333333"
+        self.bank_account_2.acc_number = "8333333333"
+        self.journal_2.bank_account_id = self.bank_account_2
+        with self.assertRaises(UserError):
+            self.import_wizard._find_bank_journal("3333333333")
+        self.journal_2.type = "general"
+        self.assertEqual(
+            self.import_wizard._find_bank_journal("3333333333"), self.journal_1
+        )
+
     def test_match_journal(self):
         import_wizard = self.import_wizard
 
