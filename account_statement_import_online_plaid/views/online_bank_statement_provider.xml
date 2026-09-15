@@ -15,6 +15,7 @@
                     invisible="service != 'plaid'"
                 >
                     <field name="plaid_access_token" invisible="1" />
+                    <field name="plaid_account_id" />
                     <field
                         name="username"
                         required="service == 'plaid'"

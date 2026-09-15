@@ -3,6 +3,7 @@
 import datetime
 from unittest.mock import MagicMock, patch
 
+from odoo.exceptions import UserError
 from odoo.tests import common
 
 TRANSACTIONS = [
@@ -142,7 +143,7 @@ class TestAccountStatementImportOnlinePlaid(common.TransactionCase):
                 "name": "Bank",
                 "type": "bank",
                 "code": "BANK",
-                "currency_id": self.currency_eur.id,
+                "currency_id": self.currency_usd.id,
                 "bank_statements_source": "online",
                 "bank_account_id": self.bank_account.id,
             }
@@ -155,6 +156,7 @@ class TestAccountStatementImportOnlinePlaid(common.TransactionCase):
                 "password": "password",
                 "plaid_host": "sandbox",
                 "plaid_access_token": "access_token",
+                "plaid_account_id": TRANSACTIONS[0]["account_id"],
                 "journal_id": self.journal.id,
                 # To get all the moves in a month at once
                 "statement_creation_mode": "monthly",
@@ -204,3 +206,49 @@ class TestAccountStatementImportOnlinePlaid(common.TransactionCase):
         self.assertEqual(action["type"], "ir.actions.client")
         self.assertEqual(action["tag"], "plaid_login")
         self.assertEqual(action["params"]["token"], "isalinktoken")
+
+    def test_reject_other_account_and_currency(self):
+        for changes in (
+            {"account_id": "another-account"},
+            {"iso_currency_code": "EUR"},
+            {"iso_currency_code": None},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(UserError):
+                self.provider._prepare_vals_for_statement(
+                    [dict(TRANSACTIONS[0], **changes)]
+                )
+
+    def test_pending_and_posted_import_once(self):
+        posted = dict(TRANSACTIONS[0], pending_transaction_id="pending-id")
+        pending = dict(
+            posted,
+            pending=True,
+            transaction_id="pending-id",
+            account_id="unselected",
+            iso_currency_code=None,
+        )
+        lines = self.provider._prepare_vals_for_statement([pending, posted])
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["unique_import_id"], posted["transaction_id"])
+        self.assertEqual(lines[0]["amount"], -500)
+
+    def test_legacy_link_requires_account_selection(self):
+        self.provider.plaid_account_id = False
+        with self.assertRaises(UserError):
+            self.provider._plaid_retrieve_data(self.now, self.now)
+
+    @patch("plaid.api.plaid_api.PlaidApi.item_public_token_exchange")
+    def test_link_requires_one_account(self, exchange):
+        exchange.return_value = {"access_token": "synthetic-token"}
+        for accounts in (None, [], [{"id": "a"}, {"id": "b"}], [{}]):
+            with self.subTest(accounts=accounts), self.assertRaises(UserError):
+                self.provider.plaid_create_access_token(
+                    "synthetic-public", self.provider.id, accounts
+                )
+        exchange.assert_not_called()
+        self.assertTrue(
+            self.provider.plaid_create_access_token(
+                "synthetic-public", self.provider.id, [{"id": "selected"}]
+            )
+        )
+        self.assertEqual(self.provider.plaid_account_id, "selected")

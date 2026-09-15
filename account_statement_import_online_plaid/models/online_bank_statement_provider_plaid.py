@@ -27,6 +27,11 @@ AVAILABLE_LANGS = [
 class OnlineBankStatementProvider(models.Model):
     _inherit = "online.bank.statement.provider"
     plaid_access_token = fields.Char()
+    plaid_account_id = fields.Char(
+        readonly=True,
+        copy=False,
+        help="The single Plaid account selected for this journal. Relink to change it.",
+    )
     plaid_host = fields.Selection(
         [
             ("sandbox", "Sandbox"),
@@ -89,10 +94,10 @@ class OnlineBankStatementProvider(models.Model):
         }
 
     def _plaid_retrieve_data(self, date_since, date_until):
-        if not self.plaid_access_token:
+        if not self.plaid_access_token or not self.plaid_account_id:
             raise UserError(
                 _(
-                    "Please link your Plaid account first by "
+                    "Please link exactly one Plaid account for this journal by "
                     "clicking on 'Sync with Plaid'."
                 )
             )
@@ -100,24 +105,53 @@ class OnlineBankStatementProvider(models.Model):
         args = [self.username, self.password, self.plaid_host]
         client = plaid_interface._client(*args)
         transactions = plaid_interface._get_transactions(
-            client, self.plaid_access_token, date_since, date_until
+            client,
+            self.plaid_access_token,
+            date_since,
+            date_until,
+            self.plaid_account_id,
         )
         return self._prepare_vals_for_statement(transactions)
 
     @api.model
-    def plaid_create_access_token(self, public_token, active_id):
+    def plaid_create_access_token(self, public_token, active_id, accounts=None):
         provider = self.browse(active_id)
+        provider.ensure_one()
+        if not accounts or len(accounts) != 1 or not accounts[0].get("id"):
+            raise UserError(_("Select exactly one Plaid account for this journal."))
         plaid_interface = self.env["plaid.interface"]
         client = plaid_interface._client(
             provider.username, provider.password, provider.plaid_host
         )
         args = [client, public_token]
-        provider.plaid_access_token = plaid_interface._login(*args)
-        if provider.plaid_access_token:
-            return True
-        return False
+        access_token = plaid_interface._login(*args)
+        if not access_token:
+            return False
+        provider.write(
+            {
+                "plaid_access_token": access_token,
+                "plaid_account_id": accounts[0]["id"],
+            }
+        )
+        return True
 
     def _prepare_vals_for_statement(self, transactions):
+        self.ensure_one()
+        currency = self.journal_id.currency_id or self.journal_id.company_id.currency_id
+        if not self.plaid_account_id:
+            raise UserError(_("Relink Plaid and select one account for this journal."))
+        transactions = [
+            transaction
+            for transaction in transactions
+            if not transaction.get("pending", False)
+        ]
+        for transaction in transactions:
+            if transaction.get("account_id") != self.plaid_account_id:
+                raise UserError(_("Plaid returned a transaction for another account."))
+            if transaction.get("iso_currency_code") != currency.name:
+                raise UserError(
+                    _("Plaid transaction currency differs from the journal currency.")
+                )
         return [
             {
                 "date": transaction["date"],

@@ -200,6 +200,7 @@ class OnlineBankStatementProvider(models.Model):
         debug = self.env.context.get("account_statement_online_import_debug")
         debug_data = []
         for provider in self:
+            successful_until = date_since
             statement_date_since = provider._get_statement_date_since(date_since)
             while statement_date_since < date_until:
                 # Note that statement_date_until is exclusive, while date_until is
@@ -226,7 +227,11 @@ class OnlineBankStatementProvider(models.Model):
                         data, statement_date_since, statement_date_until
                     )
                 statement_date_since = statement_date_until
-            if is_scheduled:
+                successful_until = min(statement_date_until, date_until)
+            if is_scheduled and not debug:
+                provider.last_successful_run = max(
+                    provider.last_successful_run or date_since, successful_until
+                )
                 provider._schedule_next_run()
         return debug_data
 
@@ -443,7 +448,6 @@ class OnlineBankStatementProvider(models.Model):
 
     def _schedule_next_run(self):
         self.ensure_one()
-        self.last_successful_run = self.next_run
         self.next_run += self._get_next_run_period()
 
     def _get_statement_date_since(self, date):

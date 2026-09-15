@@ -7,8 +7,6 @@ import re
 from datetime import datetime, timedelta
 from operator import itemgetter
 
-import pytz
-
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 
@@ -225,9 +223,8 @@ class OnlineBankStatementProvider(models.Model):
         return self._ponto_datetime_from_string(datetime_str)
 
     def _ponto_datetime_from_string(self, datetime_str):
-        """Dates in Ponto are expressed in UTC, so we need to convert them
-        to supplied tz for proper classification.
+        """Keep naive UTC for retrieval, grouping and the shared line filter.
+
+        The shared filter converts to the provider timezone exactly once.
         """
-        dt = datetime.strptime(datetime_str, "%Y-%m-%dT%H:%M:%S.%fZ")
-        dt = dt.replace(tzinfo=pytz.utc).astimezone(pytz.timezone(self.tz or "utc"))
-        return dt.replace(tzinfo=None)
+        return datetime.strptime(datetime_str, "%Y-%m-%dT%H:%M:%S.%fZ")

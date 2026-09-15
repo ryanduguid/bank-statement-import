@@ -113,10 +113,12 @@ class TestPlaidInterface(common.TransactionCase):
         start_date = datetime.datetime.now() - relativedelta(months=1)
         end_date = datetime.datetime.now()
         res = interface_model._get_transactions(
-            client, access_token, start_date, end_date
+            client, access_token, start_date, end_date, TRANSACTIONS[0]["account_id"]
         )
 
         self.assertTrue(res)
+        request = transactions_get.call_args.args[0]
+        self.assertEqual(request.options.account_ids, [TRANSACTIONS[0]["account_id"]])
 
     @patch(
         "plaid.api.plaid_api.PlaidApi.transactions_get",
@@ -137,4 +139,5 @@ class TestPlaidInterface(common.TransactionCase):
             access_token,
             start_date,
             end_date,
+            TRANSACTIONS[0]["account_id"],
         )

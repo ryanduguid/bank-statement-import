@@ -397,17 +397,23 @@ class OnlineBankStatementProviderPayPal(models.Model):
             "start_date": transaction_date_ini,
             "end_date": transaction_date_end,
             "fields": "all",
+            "transaction_id": transaction_id,
+            "balance_affecting_records_only": "Y",
+            "page": 1,
+            "page_size": 500,
         }
-        url = f"{base}/v1/reporting/transactions?{urlencode(params)}"
-        data = self._paypal_retrieve(url, token)
-        transactions = data.get("transaction_details") or []
-        for transaction in transactions:
-            if (
-                transaction.get("transaction_info", {}).get("transaction_id")
-                == transaction_id
-            ):
-                return transaction
-        return None
+        while True:
+            url = f"{base}/v1/reporting/transactions?{urlencode(params)}"
+            data = self._paypal_retrieve(url, token)
+            for transaction in data.get("transaction_details") or []:
+                if (
+                    transaction.get("transaction_info", {}).get("transaction_id")
+                    == transaction_id
+                ):
+                    return transaction
+            if params["page"] >= data.get("total_pages", 1):
+                return None
+            params["page"] += 1
 
     def _paypal_get_transactions(self, token, currency, since, until):
         self.ensure_one()

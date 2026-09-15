@@ -63,9 +63,10 @@ class PlaidInterface(models.AbstractModel):
             raise ValidationError(_("Error getting access token: %s") % e.body) from e
         return response["access_token"]
 
-    def _get_transactions(self, client, access_token, start_date, end_date):
+    def _get_transactions(self, client, access_token, start_date, end_date, account_id):
         options = TransactionsGetRequestOptions(
             count=500,
+            account_ids=[account_id],
         )
         request = TransactionsGetRequest(
             access_token=access_token,
