@@ -140,6 +140,11 @@ class OnlineBankStatementProvider(models.Model):
         currency = self.journal_id.currency_id or self.journal_id.company_id.currency_id
         if not self.plaid_account_id:
             raise UserError(_("Relink Plaid and select one account for this journal."))
+        transactions = [
+            transaction
+            for transaction in transactions
+            if not transaction.get("pending", False)
+        ]
         for transaction in transactions:
             if transaction.get("account_id") != self.plaid_account_id:
                 raise UserError(_("Plaid returned a transaction for another account."))
@@ -157,5 +162,4 @@ class OnlineBankStatementProvider(models.Model):
                 "raw_data": transaction,
             }
             for transaction in transactions
-            if not transaction.get("pending", False)
         ]

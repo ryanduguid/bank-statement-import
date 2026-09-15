@@ -220,7 +220,13 @@ class TestAccountStatementImportOnlinePlaid(common.TransactionCase):
 
     def test_pending_and_posted_import_once(self):
         posted = dict(TRANSACTIONS[0], pending_transaction_id="pending-id")
-        pending = dict(posted, pending=True, transaction_id="pending-id")
+        pending = dict(
+            posted,
+            pending=True,
+            transaction_id="pending-id",
+            account_id="unselected",
+            iso_currency_code=None,
+        )
         lines = self.provider._prepare_vals_for_statement([pending, posted])
         self.assertEqual(len(lines), 1)
         self.assertEqual(lines[0]["unique_import_id"], posted["transaction_id"])
