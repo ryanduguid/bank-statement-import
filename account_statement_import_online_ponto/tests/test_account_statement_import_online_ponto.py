@@ -2,7 +2,7 @@
 # Copyright 2022 Therp BV <https://therp.nl>.
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest import mock
 
 from odoo import _, fields
@@ -463,3 +463,22 @@ class TestAccountStatementImportOnlinePonto(common.TransactionCase):
         self.journal.bank_account_id = False
         with self.assertRaises(UserError), self.mock_login():
             self.provider._pull(datetime(2019, 11, 3), datetime(2019, 11, 18))
+
+    def test_timezone_conversion_happens_once(self):
+        for zone, timestamp, expected in (
+            ("Australia/Sydney", "2026-09-01T13:00:00.000Z", datetime(2026, 9, 1, 23)),
+            ("Australia/Sydney", "2026-01-01T13:00:00.000Z", datetime(2026, 1, 2)),
+            ("UTC", "2026-09-01T13:00:00.000Z", datetime(2026, 9, 1, 13)),
+        ):
+            with self.subTest(zone=zone, timestamp=timestamp):
+                self.provider.tz = zone
+                utc_date = self.provider._ponto_datetime_from_string(timestamp)
+                self.assertIsNone(utc_date.tzinfo)
+                day = utc_date.replace(hour=0, minute=0, second=0)
+                lines = self.provider._get_statement_filtered_lines(
+                    [{"date": utc_date, "amount": 100, "payment_ref": "Synthetic"}],
+                    {},
+                    day,
+                    day + timedelta(days=1),
+                )
+                self.assertEqual(lines[0]["date"], expected)

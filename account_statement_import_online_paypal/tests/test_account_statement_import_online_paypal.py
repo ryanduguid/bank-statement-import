@@ -899,3 +899,40 @@ class TestAccountBankAccountStatementImportOnlinePayPal(common.TransactionCase):
             provider._paypal_format_datetime(dt),
             "2026-01-15T11:28:27Z",
         )
+
+    def test_balance_transaction_lookup_follows_pages(self):
+        from urllib.parse import parse_qs, urlsplit
+
+        provider = self.OnlineBankStatementProvider.new({"service": "paypal"})
+        wanted = {"transaction_info": {"transaction_id": "wanted"}}
+        replies = [
+            {
+                "transaction_details": [
+                    {"transaction_info": {"transaction_id": "other"}}
+                ],
+                "total_pages": 2,
+            },
+            {"transaction_details": [wanted], "total_pages": 2},
+        ]
+        with mock.patch(
+            _provider_class + "._paypal_retrieve", side_effect=replies
+        ) as retrieve:
+            self.assertEqual(
+                provider._paypal_get_transaction("synthetic", "wanted", self.today),
+                wanted,
+            )
+        queries = [
+            parse_qs(urlsplit(call.args[0]).query) for call in retrieve.call_args_list
+        ]
+        self.assertEqual([query["page"] for query in queries], [["1"], ["2"]])
+        self.assertTrue(all(query["transaction_id"] == ["wanted"] for query in queries))
+        self.assertTrue(
+            all(query["balance_affecting_records_only"] == ["Y"] for query in queries)
+        )
+        with mock.patch(
+            _provider_class + "._paypal_retrieve",
+            return_value={"transaction_details": []},
+        ):
+            self.assertIsNone(
+                provider._paypal_get_transaction("synthetic", "missing", self.today)
+            )

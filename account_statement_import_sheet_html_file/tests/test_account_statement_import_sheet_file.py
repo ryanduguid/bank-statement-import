@@ -28,3 +28,33 @@ class TestAccountStatementImportSheetFile(Common):
                 },
             ],
         )
+
+    def test_html_wrappers_preserve_nested_cell_text(self):
+        from unittest.mock import patch
+
+        for opening in (
+            "<html>",
+            '<!DOCTYPE html><html lang="en">',
+            '<html lang="en">',
+        ):
+            document = (
+                opening + "<table><tr><th>Amount</th></tr>"
+                "<tr><td><span>100</span>.00</td></tr></table></html>"
+            )
+            with (
+                self.subTest(opening=opening),
+                patch.object(
+                    type(self.parser), "_parse_data_csv", return_value=[]
+                ) as parse,
+            ):
+                self.parser._parse_data_html(
+                    self.sample_statement_map,
+                    document.encode(self.sample_statement_map.file_encoding),
+                )
+                self.assertIn(b"100.00", parse.call_args.args[-1])
+        self.assertIsNone(
+            self.parser._parse_data_html(self.sample_statement_map, b"plain csv")
+        )
+        self.assertIsNone(
+            self.parser._parse_data_html(self.sample_statement_map, b"<html></html>")
+        )

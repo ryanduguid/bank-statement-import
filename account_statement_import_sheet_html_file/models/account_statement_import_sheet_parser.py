@@ -2,6 +2,7 @@
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 
 import logging
+import re
 from csv import writer
 from io import StringIO
 
@@ -22,16 +23,25 @@ class AccountStatementImportSheetParser(models.TransientModel):
 
     def _parse_data_html(self, mapping, data_file):
         decoded_file = self._decode_data_file(data_file, encoding=mapping.file_encoding)
-        is_html = decoded_file.lower().lstrip().startswith("<html>")
+        is_html = re.match(
+            r"\s*(?:<!doctype\s+html\b[^>]*>\s*)?<html\b", decoded_file, re.I
+        )
         if is_html:
             # Convert to CSV
             rows = etree.HTML(decoded_file).xpath("//table//tr")
+            if not rows:
+                return None
 
             csv_content_stream = StringIO()
             csv_options = self._get_csv_options(mapping)
             wr = writer(csv_content_stream, **csv_options)
-            wr.writerow([col.text for col in rows[0].xpath(".//th")])
-            wr.writerows([[col.text for col in row.xpath(".//td")] for row in rows[1:]])
+            wr.writerow(["".join(col.itertext()) for col in rows[0].xpath(".//th")])
+            wr.writerows(
+                [
+                    ["".join(col.itertext()) for col in row.xpath(".//td")]
+                    for row in rows[1:]
+                ]
+            )
             decoded_file = csv_content_stream.getvalue()
 
             # Parse as CSV
