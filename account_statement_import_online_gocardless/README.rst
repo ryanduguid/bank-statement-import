@@ -98,8 +98,8 @@ To configure online bank statements provider:
 
 14. If not, an error message will be logged either in the chatter.
 
-.. |image_01| image:: https://raw.githubusercontent.com/OCA/bank-statement-import/18.0/account_statement_import_online_gocardless/static/img/gocardless_configuration.gif
-.. |image_02| image:: https://raw.githubusercontent.com/OCA/bank-statement-import/18.0/account_statement_import_online_gocardless/static/img/gocardless_bank_selection.gif
+.. |image_01| image:: https://raw.githubusercontent.com/OCA/bank-statement-import/18.0/account_statement_import_online_gocardless/static/img/gocardless_configuration.png
+.. |image_02| image:: https://raw.githubusercontent.com/OCA/bank-statement-import/18.0/account_statement_import_online_gocardless/static/img/gocardless_bank_selection.png
 
 Usage
 =====
