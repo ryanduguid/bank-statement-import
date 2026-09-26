@@ -34,11 +34,11 @@ To configure online bank statements provider:
 
 10. Click on the button "Select Bank Account Identifier".
 
-    ![image_01](../static/img/gocardless_configuration.gif)
+    ![image_01](../static/img/gocardless_configuration.png)
 
 11. A new window will appear for selecting the bank entity.
 
-    ![image_02](../static/img/gocardless_bank_selection.gif)
+    ![image_02](../static/img/gocardless_bank_selection.png)
 
 12. Select it, and you will be redirected to the selected entity for
     introducing your bank credentials to allow the connection.
