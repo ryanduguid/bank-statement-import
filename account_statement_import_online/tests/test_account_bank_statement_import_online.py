@@ -439,3 +439,35 @@ class TestAccountBankAccountStatementImportOnline(common.TransactionCase):
         self.assertEqual(len(lines), expected_length)
         # If we got expected number, return them.
         return lines
+
+    @mute_logger(
+        "odoo.addons.account_statement_import_online.models.online_bank_statement_provider"
+    )
+    def test_failed_pull_retries_from_last_completed_period(self):
+        start, middle, end = (
+            datetime(2026, 9, 1),
+            datetime(2026, 9, 2),
+            datetime(2026, 9, 3),
+        )
+        for completed, expected in ((0, start), (1, middle), (2, end)):
+            self.provider.write(
+                {
+                    "last_successful_run": start,
+                    "next_run": end,
+                    "statement_creation_mode": "daily",
+                }
+            )
+            replies = [([], {})] * completed + [
+                RuntimeError("Synthetic provider failure")
+            ]
+            with mock.patch(mock_obtain_statement_data, side_effect=replies):
+                self.provider.with_context(scheduled=True)._pull(start, end)
+            self.assertEqual(self.provider.last_successful_run, expected)
+            self.assertGreater(self.provider.next_run, end)
+        self.provider.write({"last_successful_run": False, "next_run": end})
+        with mock.patch(
+            mock_obtain_statement_data,
+            side_effect=RuntimeError("Synthetic first failure"),
+        ):
+            self.provider.with_context(scheduled=True)._pull(start, end)
+        self.assertEqual(self.provider.last_successful_run, start)
