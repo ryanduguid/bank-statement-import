@@ -3071,7 +3071,7 @@ var Plaid = (function (t) {
     "use strict";
     var i = o(204).charAt;
     t.exports = function (t, r, o) {
-      return r + (o ? i(t, r).length : 1);
+      return r + (o ? i(t, r).length || 1 : 1);
     };
   },
   ,
