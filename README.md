@@ -9,6 +9,9 @@
 
 # bank-statement-import
 
+The badges above refer to
+[upstream OCA/bank-statement-import](https://github.com/OCA/bank-statement-import).
+
 **Fork status**
 
 [![Fork code quality](https://app.codacy.com/project/badge/Grade/9afbb4f478fe4152baa2e7aa5879a1ac?branch=18.0)](https://app.codacy.com/gh/ryanduguid/bank-statement-import/dashboard)
