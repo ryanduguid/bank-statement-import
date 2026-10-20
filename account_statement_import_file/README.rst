@@ -14,19 +14,19 @@ Import Statement Files
    !! source digest: sha256:1e7e7edf2b87057101e52ac29c634f77b427b10a7e56cd8f0eb7be3ac16f9957
    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-.. |badge1| image:: https://img.shields.io/badge/maturity-Mature-brightgreen.png
+.. |badge1| image:: https://img.shields.io/badge/maturity-Mature-brightgreen.png?style=flat&labelColor=000000
     :target: https://odoo-community.org/page/development-status
     :alt: Mature
-.. |badge2| image:: https://img.shields.io/badge/license-LGPL--3-blue.png
+.. |badge2| image:: https://img.shields.io/badge/license-LGPL--3-blue.png?style=flat&labelColor=000000&color=66023C
     :target: http://www.gnu.org/licenses/lgpl-3.0-standalone.html
     :alt: License: LGPL-3
-.. |badge3| image:: https://img.shields.io/badge/github-OCA%2Fbank--statement--import-lightgray.png?logo=github
+.. |badge3| image:: https://img.shields.io/badge/github-OCA%2Fbank--statement--import-lightgray.png?logo=github&style=flat&labelColor=000000&logoColor=E5E4E2&color=66023C
     :target: https://github.com/OCA/bank-statement-import/tree/18.0/account_statement_import_file
     :alt: OCA/bank-statement-import
-.. |badge4| image:: https://img.shields.io/badge/weblate-Translate%20me-F47D42.png
+.. |badge4| image:: https://img.shields.io/badge/weblate-Translate%20me-F47D42.png?style=flat&labelColor=000000&color=66023C
     :target: https://translation.odoo-community.org/projects/bank-statement-import-18-0/bank-statement-import-18-0-account_statement_import_file
     :alt: Translate me on Weblate
-.. |badge5| image:: https://img.shields.io/badge/runboat-Try%20me-875A7B.png
+.. |badge5| image:: https://img.shields.io/badge/runboat-Try%20me-875A7B.png?style=flat&labelColor=000000&color=66023C
     :target: https://runboat.odoo-community.org/builds?repo=OCA/bank-statement-import&target_branch=18.0
     :alt: Try me on Runboat
 
