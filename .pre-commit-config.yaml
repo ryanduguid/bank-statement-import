@@ -57,6 +57,7 @@ repos:
           - --repo-name=bank-statement-import
           - --if-source-changed
           - --keep-source-digest
+          - --template-filename=.maintainer-tools/readme.rst.jinja
           - --convert-fragments-to-markdown
       - id: oca-gen-external-dependencies
   - repo: https://github.com/OCA/odoo-pre-commit-hooks
