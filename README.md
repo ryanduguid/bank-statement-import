@@ -3,7 +3,7 @@
 [![Pre-commit Status](https://img.shields.io/github/actions/workflow/status/OCA/bank-statement-import/pre-commit.yml?branch=18.0&label=pre-commit&style=flat&labelColor=000000)](https://github.com/OCA/bank-statement-import/actions/workflows/pre-commit.yml?query=branch%3A18.0)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/OCA/bank-statement-import/test.yml?branch=18.0&label=tests&style=flat&labelColor=000000)](https://github.com/OCA/bank-statement-import/actions/workflows/test.yml?query=branch%3A18.0)
 [![codecov](https://img.shields.io/codecov/c/github/OCA/bank-statement-import/18.0?style=flat&labelColor=000000)](https://codecov.io/gh/OCA/bank-statement-import)
-[![Translation Status](https://translation.odoo-community.org/widgets/bank-statement-import-18-0/-/svg-badge.svg)](https://translation.odoo-community.org/engage/bank-statement-import-18-0/?utm_source=widget)
+[![Translation Status](https://img.shields.io/badge/dynamic/xml?url=https%3A%2F%2Ftranslation.odoo-community.org%2Fwidgets%2Fbank-statement-import-18-0%2F-%2Fsvg-badge.svg&query=substring-after%28%2F*%5Blocal-name%28%29%3D%27svg%27%5D%2F*%5Blocal-name%28%29%3D%27title%27%5D%2C%27translated+%27%29&label=translated&style=flat&labelColor=000000&color=66023C)](https://translation.odoo-community.org/engage/bank-statement-import-18-0/?utm_source=widget)
 
 <!-- /!\ do not modify above this line -->
 
