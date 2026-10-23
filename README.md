@@ -12,11 +12,13 @@
 The badges above refer to
 [upstream OCA/bank-statement-import](https://github.com/OCA/bank-statement-import).
 
+<div align="center">
+
 **Fork status**
 
-[![Fork code quality](https://img.shields.io/codacy/grade/9afbb4f478fe4152baa2e7aa5879a1ac/18.0?style=flat&labelColor=000000)](https://app.codacy.com/gh/ryanduguid/bank-statement-import/dashboard)
-[![Fork tests](https://img.shields.io/github/actions/workflow/status/ryanduguid/bank-statement-import/test.yml?branch=18.0&label=tests&style=flat&labelColor=000000)](https://github.com/ryanduguid/bank-statement-import/actions/workflows/test.yml)
-[![Fork pre-commit](https://img.shields.io/github/actions/workflow/status/ryanduguid/bank-statement-import/pre-commit.yml?branch=18.0&label=pre-commit&style=flat&labelColor=000000)](https://github.com/ryanduguid/bank-statement-import/actions/workflows/pre-commit.yml)
+[![Fork code quality](https://img.shields.io/codacy/grade/9afbb4f478fe4152baa2e7aa5879a1ac/18.0?style=flat&labelColor=000000)](https://app.codacy.com/gh/ryanduguid/bank-statement-import/dashboard) [![Fork tests](https://img.shields.io/github/actions/workflow/status/ryanduguid/bank-statement-import/test.yml?branch=18.0&label=tests&style=flat&labelColor=000000)](https://github.com/ryanduguid/bank-statement-import/actions/workflows/test.yml) [![Fork pre-commit](https://img.shields.io/github/actions/workflow/status/ryanduguid/bank-statement-import/pre-commit.yml?branch=18.0&label=pre-commit&style=flat&labelColor=000000)](https://github.com/ryanduguid/bank-statement-import/actions/workflows/pre-commit.yml)
+
+</div>
 
 bank-statement-import
 
