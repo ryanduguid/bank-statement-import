@@ -20,6 +20,8 @@ The badges above refer to
 
 </div>
 
+ryanduguid/bank-statement-import is [Ryan Duguid](https://duguid.com.au/)'s Odoo 18.0 fork of [OCA/bank-statement-import](https://github.com/OCA/bank-statement-import), adding account identity, transaction integrity and sheet date fixes for Odoo 18.0 users who need those changes in their bank statement imports.
+
 GitHub Actions is off for this fork, so `test.yml` and `pre-commit.yml` do not run on GitHub. Run their steps locally before merging.
 
 bank-statement-import
