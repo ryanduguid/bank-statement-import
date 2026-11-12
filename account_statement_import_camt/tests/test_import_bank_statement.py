@@ -17,6 +17,47 @@ from lxml import etree
 from odoo.tests.common import TransactionCase
 from odoo.tools.misc import file_path
 
+DOMESTIC_INTERIM_CAMT = b"""<Document
+    xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.04">
+  <BkToCstmrStmt>
+    <GrpHdr><MsgId>fabricated-interim</MsgId></GrpHdr>
+    <Stmt>
+      <Id>Fabricated interim/1</Id>
+      <Acct><Id><Othr><Id>NL77ABNA0574908765</Id></Othr></Id></Acct>
+      <Bal>
+        <Tp><CdOrPrtry><Cd>ITBD</Cd></CdOrPrtry></Tp>
+        <Amt Ccy="EUR">1000.00</Amt><CdtDbtInd>CRDT</CdtDbtInd>
+        <Dt><Dt>2026-06-28</Dt></Dt>
+      </Bal>
+      <Bal>
+        <Tp><CdOrPrtry><Cd>ITBD</Cd></CdOrPrtry></Tp>
+        <Amt Ccy="EUR">1015.00</Amt><CdtDbtInd>CRDT</CdtDbtInd>
+        <Dt><Dt>2026-06-30</Dt></Dt>
+      </Bal>
+      <Ntry>
+        <Amt Ccy="EUR">25.00</Amt><CdtDbtInd>CRDT</CdtDbtInd>
+        <BookgDt><Dt>2026-06-29</Dt></BookgDt>
+        <NtryDtls><TxDtls>
+          <Refs><EndToEndId>fabricated-credit-25</EndToEndId></Refs>
+          <RltdPties>
+            <Dbtr><PstlAdr>
+              <AdrLine>Fabricated Domestic Sender</AdrLine>
+              <AdrLine>1 Example Road</AdrLine>
+            </PstlAdr></Dbtr>
+            <DbtrAcct><Id><Othr><Id>123450001</Id></Othr></Id></DbtrAcct>
+          </RltdPties>
+          <RmtInf><Ustrd>Fabricated invoice 25</Ustrd><Ustrd>Part 2</Ustrd></RmtInf>
+        </TxDtls></NtryDtls>
+      </Ntry>
+      <Ntry>
+        <Amt Ccy="EUR">10.00</Amt><CdtDbtInd>DBIT</CdtDbtInd>
+        <BookgDt><DtTm>2026-06-30T00:00:00</DtTm></BookgDt>
+        <AddtlNtryInf>Fabricated entry summary</AddtlNtryInf>
+      </Ntry>
+    </Stmt>
+  </BkToCstmrStmt>
+</Document>"""
+
 
 class TestParserCommon(TransactionCase):
     @classmethod
@@ -191,7 +232,7 @@ class TestImport(TransactionCase):
                 "bank_id": cls.env.ref("base.res_bank_1").id,
             }
         )
-        cls.env["account.journal"].create(
+        cls.journal = cls.env["account.journal"].create(
             {
                 "name": "Bank Journal - (test camt)",
                 "code": "TBNKCAMT",
@@ -247,3 +288,52 @@ class TestImport(TransactionCase):
 
         self.assertTrue(all([st.line_ids for st in bank_st_record]))
         self.assertEqual(bank_st_record[0].line_ids.mapped("sequence"), [1, 2, 3])
+
+    def _assert_domestic_interim_import(self, content, filename):
+        self.env["account.statement.import"].create(
+            {
+                "statement_filename": filename,
+                "statement_file": base64.b64encode(content),
+            }
+        ).import_file_button()
+        statement = self.env["account.bank.statement"].search(
+            [("name", "=", "Fabricated interim/1")]
+        )
+        self.assertEqual(len(statement), 1)
+        self.assertEqual(statement.journal_id, self.journal)
+        self.assertEqual(statement.journal_id.currency_id, self.env.ref("base.EUR"))
+        self.assertEqual(statement.date, date(2026, 6, 30))
+        self.assertEqual(statement.balance_start, 1000.0)
+        self.assertEqual(statement.balance_end_real, 1015.0)
+        self.assertEqual(len(statement.line_ids), 2)
+        debit, credit = statement.line_ids.sorted("amount")
+        self.assertEqual((debit.amount, credit.amount), (-10.0, 25.0))
+        self.assertEqual(sum(statement.line_ids.mapped("amount")), 15.0)
+        self.assertEqual(
+            statement.balance_start + sum(statement.line_ids.mapped("amount")),
+            statement.balance_end_real,
+        )
+        self.assertEqual(credit.date, date(2026, 6, 29))
+        self.assertEqual(credit.ref, "fabricated-credit-25")
+        self.assertEqual(credit.payment_ref, "Fabricated invoice 25\nPart 2")
+        self.assertEqual(credit.partner_name, "Fabricated Domestic Sender")
+        self.assertEqual(credit.account_number, "123450001")
+        self.assertIn("1 Example Road", credit.narration)
+        self.assertEqual(debit.date, date(2026, 6, 30))
+        self.assertEqual(debit.payment_ref, "/")
+        self.assertIn("Fabricated entry summary", debit.narration)
+
+    def test_domestic_interim_balances_and_summary_entry(self):
+        self._assert_domestic_interim_import(DOMESTIC_INTERIM_CAMT, "interim.xml")
+
+    def test_empty_zip_member_preserves_populated_statement_identity(self):
+        empty_path = file_path(
+            "account_statement_import_camt/tests/samples/test-camt053-no-ntry"
+        )
+        with open(empty_path, "rb") as empty_file, BytesIO() as stream:
+            empty_statement = etree.fromstring(empty_file.read())
+            empty_statement.find(".//{*}Acct/{*}Id/{*}IBAN").text = "NL46ABNA0499998748"
+            with zipfile.ZipFile(stream, "w") as archive:
+                archive.writestr("01-empty.xml", etree.tostring(empty_statement))
+                archive.writestr("02-interim.xml", DOMESTIC_INTERIM_CAMT)
+            self._assert_domestic_interim_import(stream.getvalue(), "interim.zip")

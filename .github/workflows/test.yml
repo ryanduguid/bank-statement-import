@@ -15,6 +15,8 @@ jobs:
     name: Detect unreleased dependencies
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - run: |
           for reqfile in requirements.txt test-requirements.txt ; do
               if [ -f ${reqfile} ] ; then
@@ -29,7 +31,9 @@ jobs:
           done
   test:
     runs-on: ubuntu-22.04
-    container: ${{ matrix.container }}
+    container:
+      image: ${{ matrix.container }}
+      options: --init
     name: ${{ matrix.name }}
     strategy:
       fail-fast: false
@@ -65,7 +69,7 @@ jobs:
         run: oca_init_test_database
       - name: Run tests
         run: oca_run_tests
-      - uses: codecov/codecov-action@v4
+      - uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
       - name: Update .pot files

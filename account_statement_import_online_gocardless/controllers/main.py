@@ -13,7 +13,7 @@ class GocardlessController(http.Controller):
     @http.route("/gocardless/response", type="http", auth="public", csrf=False)
     def gocardless_response(self, **post):
         Provider = request.env["online.bank.statement.provider"].sudo()
-        current_provider = Provider.search(
+        current_providers = Provider.search(
             [("gocardless_requisition_ref", "=", post["ref"])]
         )
         params = {
@@ -22,12 +22,13 @@ class GocardlessController(http.Controller):
             ).id,
             "model": "online.bank.statement.provider",
         }
-        if current_provider:
-            current_provider._gocardless_finish_requisition()
+        for provider in current_providers:
+            provider._gocardless_finish_requisition()
+        if len(current_providers) == 1:
             params.update(
                 {
                     "view_type": "form",
-                    "id": current_provider.id,
+                    "id": current_providers.id,
                 }
             )
         else:

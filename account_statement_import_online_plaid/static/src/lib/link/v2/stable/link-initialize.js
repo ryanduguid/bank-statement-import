@@ -8385,8 +8385,11 @@ var Plaid = (function (t) {
         t.postMessage(JSON.stringify(i), r || c.LINK_CLIENT_CORS_ORIGIN);
       };
     };
-    r.createMessageEventListener = function createMessageEventListener(t, r, o) {
+    r.createMessageEventListener = function createMessageEventListener(
+      t, r, o, viewport, expectedOrigin
+    ) {
       return function (i) {
+        if (i.origin !== expectedOrigin || !viewport.isMessageSource(i.source)) return;
         var a = (function parseJSON(t) {
           try {
             return JSON.parse(t);
@@ -10073,7 +10076,7 @@ var Plaid = (function (t) {
         var U = (0, u.default)(j[M], 2),
           W = U[0],
           D = U[1],
-          V = p.createMessageEventListener(W, E, D);
+          V = p.createMessageEventListener(W, E, D, m, I);
         window.addEventListener("message", V, !1), k.push(V);
       }
       var K,
@@ -10187,6 +10190,9 @@ var Plaid = (function (t) {
         postMessage: function postMessage(t, o) {
           null != r && null != r.contentWindow && r.contentWindow.postMessage(t, o);
         },
+        isMessageSource: function isMessageSource(t) {
+          return null != r && null != t && t === r.contentWindow;
+        },
         isOpen: function isOpen() {
           return !0 === o;
         },
@@ -10232,16 +10238,25 @@ var Plaid = (function (t) {
         o = "",
         i = "",
         p = "",
+        bodyHeight = "",
+        bodyHeightPriority = "",
+        resizeTimer = null,
         h = {x: 0, y: 0},
         y = null,
         _ = function hide() {
+          if (!r) return;
+          if (resizeTimer !== null) {
+            clearTimeout(resizeTimer);
+            resizeTimer = null;
+            document.body.style.setProperty("height", bodyHeight, bodyHeightPriority);
+          }
           (r = !1),
             t && t.style.setProperty("display", "none", "important"),
             (function restoreAllElements() {
               var t = document.getElementById(d);
               t && t.parentNode && t.parentNode.removeChild(t),
                 (document.documentElement.id = o),
-                document.documentElement.style.setProperty(i, p);
+                document.documentElement.style.setProperty("height", i, p);
             })(),
             (function restoreScroll() {
               window.scrollTo(h.x, h.y);
@@ -10270,6 +10285,9 @@ var Plaid = (function (t) {
         postMessage: function postMessage(r, o) {
           null != t && null != t.contentWindow && t.contentWindow.postMessage(r, o);
         },
+        isMessageSource: function isMessageSource(r) {
+          return null != t && null != r && r === t.contentWindow;
+        },
         resize: function resize(t) {
           document.documentElement.style.setProperty("height", t, "important");
         },
@@ -10286,7 +10304,9 @@ var Plaid = (function (t) {
             (function hideAllElements() {
               (o = document.documentElement.id),
                 (i = document.documentElement.style.getPropertyValue("height")),
-                (p = document.documentElement.style.getPropertyPriority("height"));
+                (p = document.documentElement.style.getPropertyPriority("height")),
+                (bodyHeight = document.body.style.getPropertyValue("height")),
+                (bodyHeightPriority = document.body.style.getPropertyPriority("height"));
               var t = document.createElement("style");
               (t.id = d), (t.textContent = v);
               var r = document.querySelector("head");
@@ -10295,13 +10315,13 @@ var Plaid = (function (t) {
             window.scrollTo(0, 0),
             t &&
               ((0, u.default)().isIOSChrome &&
-                setTimeout(function () {
+                (resizeTimer = setTimeout(function () {
                   document.body.style.setProperty(
                     "height",
                     window.innerHeight + "px",
                     "important"
                   );
-                }, 100),
+                }, 100)),
               t.style.setProperty("display", "block", "important"),
               t.contentWindow && t.contentWindow.focus()));
         },
@@ -10904,7 +10924,9 @@ var Plaid = (function (t) {
           },
         },
         N = [],
-        L = _.createMessageEventListener(O.PLAID_INTERNAL_NAMESPACE, c, R);
+        L = _.createMessageEventListener(
+          O.PLAID_INTERNAL_NAMESPACE, c, R, l, O.LINK_CLIENT_CORS_ORIGIN
+        );
       window.addEventListener("message", L, !1), N.push(L);
       var C = function destroy() {
           l.destroy();
@@ -10982,6 +11004,9 @@ var Plaid = (function (t) {
         hide: function hide() {},
         postMessage: function postMessage(t, o) {
           null != r && null != r.contentWindow && r.contentWindow.postMessage(t, o);
+        },
+        isMessageSource: function isMessageSource(t) {
+          return null != r && null != t && t === r.contentWindow;
         },
         isOpen: function isOpen() {
           return !0;

@@ -85,12 +85,12 @@ class AccountStatementLineCreate(models.TransientModel):
             domain.append(("move_id", "!=", False))
         paylines = self.env["account.payment"].search(
             [
-                ("state", "in", ("draft", "posted", "sent")),
+                ("state", "in", ("draft", "in_process", "paid")),
                 ("move_id.line_ids", "!=", False),
             ]
         )
         if paylines:
-            move_in_payment_ids = paylines.mapped("line_ids.id")
+            move_in_payment_ids = paylines.mapped("move_id.line_ids.id")
             domain += [("id", "not in", move_in_payment_ids)]
         return domain
 

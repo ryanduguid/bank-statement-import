@@ -37,7 +37,7 @@ export class GocardlessDialog extends Component {
     get_institutions(country, searchString) {
         var institutions = this.props.context.institutions;
         if (country) {
-            institutions.filter((institution) =>
+            institutions = institutions.filter((institution) =>
                 institution.countries.includes(country)
             );
         }
