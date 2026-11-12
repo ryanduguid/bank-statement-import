@@ -265,6 +265,67 @@ class TestAccountBankAccountStatementImportOnline(common.TransactionCase):
         wizard.action_pull()
         self._getExpectedStatements(1)
 
+    def test_compatibility_provider_pull_action_imports_transactions(self):
+        self._check_compatibility_pull_action(self.provider)
+
+    def test_compatibility_journal_pull_action_imports_transactions(self):
+        self._check_compatibility_pull_action(self.journal)
+
+    def _check_compatibility_pull_action(self, record):
+        self.provider.write(
+            {"tz": "UTC", "statement_creation_mode": "daily", "create_statement": True}
+        )
+        action = record.with_context(
+            tz="UTC",
+            active_model="account.journal",
+            active_id=self.journal.id,
+            active_ids=self.journal.ids,
+            step={"hours": 12},
+            amount=25.0,
+            balance_start=100.0,
+        ).action_online_bank_statements_pull_wizard()
+        self.assertEqual(action["type"], "ir.actions.act_window")
+        self.assertEqual(action["res_model"], self.OnlineBankStatementPullWizard._name)
+        self.assertEqual(action["view_mode"], "form")
+        self.assertEqual(action["target"], "new")
+        context = action["context"]
+        self.assertEqual(context["active_model"], self.provider._name)
+        self.assertEqual(context["active_id"], self.provider.id)
+        self.assertEqual(context["active_ids"], self.provider.ids)
+        wizard = (
+            self.env[action["res_model"]].with_context(context).browse(action["res_id"])
+        )
+        self.assertTrue(wizard.exists())
+        wizard.write(
+            {
+                "date_since": datetime(2024, 5, 1),
+                "date_until": datetime(2024, 5, 2),
+            }
+        )
+        result = wizard.action_pull()
+        self.assertEqual(result["domain"], [("journal_id", "=", self.journal.id)])
+        statement = self._getExpectedStatements(1)
+        self.assertEqual(statement.name, "BANK/2024-05-01")
+        self.assertEqual(statement.balance_start, 100.0)
+        self.assertEqual(statement.balance_end_real, 150.0)
+        self.assertEqual(statement.balance_end, 150.0)
+        lines = self._getExpectedLines(2).sorted("unique_import_id")
+        self.assertEqual(lines.mapped("amount"), [25.0, 25.0])
+        self.assertEqual(lines.mapped("date"), [date(2024, 5, 1)] * 2)
+        self.assertEqual(lines.mapped("payment_ref"), ["payment", "payment"])
+        self.assertEqual(
+            lines.mapped("unique_import_id"),
+            [f"{self.journal.id}-{stamp}" for stamp in (1714521600, 1714564800)],
+        )
+
+        repeated = wizard.action_pull()
+        self.assertEqual(repeated["domain"], result["domain"])
+        self.assertEqual(self._getExpectedStatements(1).ids, statement.ids)
+        self.assertEqual(
+            self._getExpectedLines(2).sorted("unique_import_id").ids, lines.ids
+        )
+        self.assertEqual(statement.balance_end, 150.0)
+
     def test_pull_statement_partially(self):
         self.provider.statement_creation_mode = "monthly"
         provider_context = {

@@ -84,6 +84,46 @@ class TestAccountBankAccountStatementImportOnlinePayPal(common.TransactionCase):
             return_value="--TOKEN--",
         )
 
+    def test_request_authentication_preserves_the_body_and_destination(self):
+        url = "https://example.com/paypal-fixture"
+        body = b"grant_type=client_credentials"
+        for auth, expected in (
+            (
+                ("fixture-client", "fixture-secret"),
+                "Basic Zml4dHVyZS1jbGllbnQ6Zml4dHVyZS1zZWNyZXQ=",
+            ),
+            ("fixture-access-token", "Bearer fixture-access-token"),
+        ):
+            with self.subTest(auth=expected.split()[0]):
+                response = object()
+                with mock.patch(
+                    "urllib.request.urlopen", return_value=response
+                ) as urlopen:
+                    result = self.OnlineBankStatementProvider._paypal_urlopen(
+                        url, auth, data=body
+                    )
+                self.assertIs(result, response)
+                urlopen.assert_called_once()
+                request = urlopen.call_args.args[0]
+                self.assertEqual(request.full_url, url)
+                self.assertEqual(request.get_method(), "POST")
+                self.assertEqual(request.get_header("Authorization"), expected)
+                self.assertEqual(request.data, body)
+
+    def test_invalid_authentication_is_refused_before_opening_a_connection(self):
+        for auth, message in (
+            (None, "No authentication specified"),
+            ("", "No authentication specified"),
+            (42, "Unknown authentication specified"),
+        ):
+            with self.subTest(auth=auth):
+                with mock.patch("urllib.request.urlopen") as urlopen:
+                    with self.assertRaisesRegex(UserError, message):
+                        self.OnlineBankStatementProvider._paypal_urlopen(
+                            "https://example.com/paypal-fixture", auth
+                        )
+                urlopen.assert_not_called()
+
     def test_good_token(self):
         journal = self.AccountJournal.create(
             {

@@ -11,6 +11,7 @@ from urllib.error import HTTPError
 from dateutil.relativedelta import relativedelta
 
 from odoo import fields
+from odoo.exceptions import UserError
 from odoo.tests import Form, common
 
 _module_ns = "odoo.addons.account_statement_import_online_wise"
@@ -151,6 +152,91 @@ class TestAccountBankAccountStatementImportOnlineWise(common.TransactionCase):
                 api_base="https://example.com", api_key="dummy"
             ).values_wise_profile()
         self.assertEqual(values_wise_profile, [])
+
+    def test_profile_service_failure_returns_no_choices_and_logs_the_failure(self):
+        error = HTTPError(
+            "https://example.com/v1/profiles", 503, "Unavailable", {}, None
+        )
+        with (
+            mock.patch(
+                _provider_class + "._wise_urlopen", side_effect=error
+            ) as request,
+            self.assertLogs(_module_ns, level="WARNING") as captured,
+        ):
+            profiles = self.OnlineBankStatementProvider.with_context(
+                api_base="https://example.com", api_key="fabricated-api-key"
+            ).values_wise_profile()
+        self.assertEqual(profiles, [])
+        request.assert_called_once_with(
+            "https://example.com/v1/profiles", "fabricated-api-key"
+        )
+        self.assertIn("Unable to get profiles", captured.output[0])
+
+    def test_retrieve_rejects_an_expired_token_response(self):
+        response = MockedResponse(
+            data=(
+                b'{"error":"invalid_token",'
+                b'"error_description":"Expired fixture token"}'
+            )
+        )
+        with mock.patch(_provider_class + "._wise_urlopen", return_value=response):
+            with self.assertRaisesRegex(UserError, "Expired fixture token"):
+                self.OnlineBankStatementProvider._wise_retrieve(
+                    "https://example.com/statement", "fabricated-api-key"
+                )
+
+    def test_rate_limit_is_propagated_without_an_authentication_retry(self):
+        error = HTTPError(
+            "https://example.com/statement", 429, "Rate limited", {}, None
+        )
+        with (
+            mock.patch(
+                _provider_class + "._wise_urlopen", side_effect=error
+            ) as request,
+            self.assertRaises(HTTPError) as captured,
+        ):
+            self.OnlineBankStatementProvider._wise_retrieve(
+                "https://example.com/statement", "fabricated-api-key"
+            )
+        self.assertIs(captured.exception, error)
+        request.assert_called_once_with(
+            "https://example.com/statement", "fabricated-api-key"
+        )
+
+    def test_sca_challenge_requires_configuration_before_retrying(self):
+        error = HTTPError(
+            "https://example.com/statement",
+            403,
+            "Forbidden",
+            {
+                "X-2FA-Approval-Result": "REJECTED",
+                "X-2FA-Approval": "fixture-challenge",
+            },
+            None,
+        )
+        with (
+            mock.patch(
+                _provider_class + "._wise_urlopen", side_effect=error
+            ) as request,
+            self.assertRaisesRegex(
+                UserError, "Strong Customer Authentication is not configured"
+            ) as captured,
+        ):
+            self.OnlineBankStatementProvider._wise_retrieve(
+                "https://example.com/statement", "fabricated-api-key"
+            )
+        self.assertIs(captured.exception.__cause__, error)
+        request.assert_called_once_with(
+            "https://example.com/statement", "fabricated-api-key"
+        )
+
+    def test_missing_api_key_is_refused_before_opening_a_connection(self):
+        with mock.patch("urllib.request.urlopen") as request:
+            with self.assertRaisesRegex(UserError, "No API key specified"):
+                self.OnlineBankStatementProvider._wise_urlopen(
+                    "https://example.com/statement", ""
+                )
+        request.assert_not_called()
 
     def test_pull(self):
         journal = self.AccountJournal.create(

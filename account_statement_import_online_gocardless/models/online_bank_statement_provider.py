@@ -307,13 +307,14 @@ class OnlineBankStatementProvider(models.Model):
         now = fields.Datetime.now()
         if now > date_since and now < date_until:
             date_until = now
-        _response, data = self._gocardless_request(
+        response, data = self._gocardless_request(
             f"accounts/{self.gocardless_account_id}/transactions",
             params={
                 "date_from": date_since.strftime(DF),
                 "date_to": date_until.strftime(DF),
             },
         )
+        response.raise_for_status()
         return data
 
     def _gocardless_obtain_statement_data(self, date_since, date_until):
@@ -325,13 +326,12 @@ class OnlineBankStatementProvider(models.Model):
             return
         currency_model = self.env["res.currency"]
         if self.gocardless_requisition_expiration <= fields.Datetime.now():
-            self.sudo().message_post(
-                body=_(
-                    "You should renew the authorization process with your bank "
-                    "institution for GoCardless."
-                )
+            message = _(
+                "You should renew the authorization process with your bank "
+                "institution for GoCardless."
             )
-            return [], {}
+            self.sudo().message_post(body=message)
+            raise UserError(message)
         own_acc_number = self.journal_id.bank_account_id.sanitized_acc_number
         transactions = self._gocardless_request_transactions(date_since, date_until)
         res = []

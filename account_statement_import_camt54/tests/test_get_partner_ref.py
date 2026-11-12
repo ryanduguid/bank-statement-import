@@ -64,3 +64,8 @@ class TestGetPartnerRef(common.TransactionCase):
         self.ICP.set_param("qrr_partner_ref", "A,8")
         with self.assertRaises(UserError):
             self.Parser._get_partner_ref(ref)
+
+    def test_ICP_rejects_more_than_two_format_components(self):
+        self.ICP.set_param("qrr_partner_ref", "1,2,3")
+        with self.assertRaisesRegex(UserError, r"It must be in format `i\[,n\]`"):
+            self.Parser._get_partner_ref("000000000000000000000000003")

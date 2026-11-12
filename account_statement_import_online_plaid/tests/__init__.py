@@ -2,3 +2,4 @@
 
 from . import test_plaid_interface
 from . import test_account_statement_import_online_plaid
+from . import test_plaid_link_lifecycle
