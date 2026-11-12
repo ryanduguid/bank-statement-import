@@ -17,7 +17,6 @@ from lxml import etree
 from odoo.tests.common import TransactionCase
 from odoo.tools.misc import file_path
 
-
 DOMESTIC_INTERIM_CAMT = b"""<Document
     xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.04">
   <BkToCstmrStmt>

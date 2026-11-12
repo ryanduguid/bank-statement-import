@@ -293,7 +293,9 @@ class TestAccountBankAccountStatementImportOnline(common.TransactionCase):
         self.assertEqual(context["active_id"], self.provider.id)
         self.assertEqual(context["active_ids"], self.provider.ids)
         wizard = (
-            self.env[action["res_model"]].with_context(context).browse(action["res_id"])
+            self.env[action["res_model"]]
+            .with_context(**context)
+            .browse(action["res_id"])
         )
         self.assertTrue(wizard.exists())
         wizard.write(

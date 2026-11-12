@@ -258,7 +258,10 @@ class TestGocardlessConnection(HttpCase):
                 "id": institution,
                 "name": "Fabricated UI Bank",
                 "countries": ["NL"],
-                "logo": "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==",
+                "logo": (
+                    "data:image/gif;base64,"
+                    "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+                ),
             }
         ]
         response = requests.Response()
@@ -292,7 +295,8 @@ class TestGocardlessConnection(HttpCase):
         ):
             self.browser_js(
                 f"/odoo/action-{action.id}/{self.donor.id}",
-                f"const expectedRedirects = {json.dumps([redirect] if status == 201 and institution else [])};\n"
+                "const expectedRedirects = "
+                f"{json.dumps([redirect] if status == 201 and institution else [])};\n"
                 f"const expectedInstitution = {json.dumps(institution)};\n"
                 + r"""
 (async () => {
@@ -305,42 +309,60 @@ class TestGocardlessConnection(HttpCase):
     const redirects = [];
     const callbackIds = [];
     let resolve, reject;
-    const completed = new Promise((accept, refuse) => { resolve = accept; reject = refuse; });
+    const completed = new Promise((accept, refuse) => {
+        resolve = accept; reject = refuse;
+    });
     Object.defineProperty(browser, "location", {
-        configurable: true, value: {...browser.location, replace: (url) => redirects.push(url)},
+        configurable: true,
+        value: {...browser.location, replace: (url) => redirects.push(url)},
     });
     actions.add(tag, async (env, action) => {
         const dialog = env.services.dialog;
         const originalAdd = dialog.add;
-        dialog.add = (Component, props, ...options) => originalAdd.call(dialog, Component, {
+        dialog.add = (Component, props, ...options) => originalAdd.call(
+            dialog, Component, {
             ...props,
             onClickInstitution: async (...args) => {
                 callbackIds.push(args[0]);
                 try { await props.onClickInstitution(...args); resolve(); }
                 catch (error) { reject(error); throw error; }
             },
-        }, ...options);
+            }, ...options);
         try { return await originalAction(env, action); }
         finally { dialog.add = originalAdd; }
     }, {force: true});
     try {
-        document.querySelector(".o_form_view button[name='action_select_gocardless_bank']").click();
+        document.querySelector(
+            ".o_form_view button[name='action_select_gocardless_bank']"
+        ).click();
         const deadline = performance.now() + 5000;
         let selected;
-        while (!(selected = document.querySelector(".institution-container .list-institution a"))) {
-            if (performance.now() >= deadline) throw new Error("real institution dialog did not mount");
+        while (!(selected = document.querySelector(
+            ".institution-container .list-institution a"
+        ))) {
+            if (performance.now() >= deadline) {
+                throw new Error("real institution dialog did not mount");
+            }
             await new Promise((accept) => setTimeout(accept, 10));
         }
-        if (!selected.textContent.includes("Fabricated UI Bank")) throw new Error("wrong institution card");
+        if (!selected.textContent.includes("Fabricated UI Bank")) {
+            throw new Error("wrong institution card");
+        }
         selected.click();
         await completed;
         if (JSON.stringify(callbackIds) !== JSON.stringify([expectedInstitution])) {
-            throw new Error("original callback did not receive exactly the rendered institution ID");
+            throw new Error(
+                "original callback did not receive exactly the rendered institution ID"
+            );
         }
         if (JSON.stringify(redirects) !== JSON.stringify(expectedRedirects)) {
-            throw new Error("completed consent navigation mismatch: " + JSON.stringify(redirects));
+            throw new Error(
+                "completed consent navigation mismatch: " + JSON.stringify(redirects)
+            );
         }
-        if (!selected.isConnected) throw new Error("selection dialog was unexpectedly removed");
+        if (!selected.isConnected) {
+            throw new Error("selection dialog was unexpectedly removed");
+        }
     } finally {
         actions.add(tag, originalAction, {force: true});
         Object.defineProperty(browser, "location", locationDescriptor);
@@ -348,7 +370,11 @@ class TestGocardlessConnection(HttpCase):
     console.log("test successful");
 })().catch((error) => console.error(error.stack));
 """,
-                ready="document.querySelector(\".o_form_view button[name='action_select_gocardless_bank']\") !== null",
+                ready=(
+                    "document.querySelector("
+                    "\".o_form_view button[name='action_select_gocardless_bank']\""
+                    ") !== null"
+                ),
                 login="admin",
                 timeout=90,
             )

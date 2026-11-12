@@ -575,7 +575,7 @@ class OnlineBankStatementProvider(models.Model):
             active_id=self.id,
             active_ids=self.ids,
         )
-        wizard = self.env[WIZARD_MODEL].with_context(context).create({})
+        wizard = self.env[WIZARD_MODEL].with_context(**context).create({})
         return {
             "type": "ir.actions.act_window",
             "res_model": WIZARD_MODEL,
