@@ -6,7 +6,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import urlparse
 
-from odoo.tests import HttpCase, tagged
+from odoo.tests import HttpCase, common, tagged
+
+from .iframe_proxy import FrameProxy, fixture_browser
 
 PLAID_PEER = r"""<!doctype html><meta charset="utf-8"><script>
 const instance = new URL(location.href).searchParams.get("uniqueId");
@@ -83,9 +85,18 @@ function frameFor(expectedOrigin = "https://cdn.plaid.com") {
 
 @tagged("post_install", "-at_install")
 class TestPlaidLinkLifecycle(HttpCase):
+    _fixture_frame_proxy = FrameProxy
+
     def setUp(self):
         super().setUp()
         self._fixture_requests = SimpleQueue()
+
+    def browser_js(self, *args, **kwargs):
+        # Chrome can move a reloaded or navigated iframe to a child process.
+        # Its requests still need the same fabricated responses as the page.
+        browser = fixture_browser(common.ChromeBrowser, common.HOST)
+        with patch.object(common, "ChromeBrowser", browser):
+            return super().browser_js(*args, **kwargs)
 
     def fetch_proxy(self, url):
         parsed = urlparse(url)

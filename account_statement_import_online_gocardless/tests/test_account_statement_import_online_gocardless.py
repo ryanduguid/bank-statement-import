@@ -201,7 +201,7 @@ class TestAccountBankAccountStatementImportOnlineGocardless(common.TransactionCa
                 ("fixture-empty", "Fixture Donor", 5, False),
             ]:
                 line = lines.filtered(
-                    lambda item: item.unique_import_id
+                    lambda item, identifier=identifier: item.unique_import_id
                     == f"{own_account}-{self.journal.id}-{identifier}"
                 )
                 self.assertEqual(len(line), 1)
