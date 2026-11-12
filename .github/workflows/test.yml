@@ -78,6 +78,7 @@ jobs:
       - name: Instrument every maintained browser asset
         shell: bash
         run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           node - <<'JS'
           const assert = require('node:assert/strict');
           const path = require('node:path');
