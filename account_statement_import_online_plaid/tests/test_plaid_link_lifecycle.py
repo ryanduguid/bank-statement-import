@@ -1,6 +1,7 @@
 # Copyright 2026 Ryan Duguid
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 
+from pathlib import Path
 from queue import SimpleQueue
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -83,6 +84,26 @@ function frameFor(expectedOrigin = "https://cdn.plaid.com") {
 """
 
 
+PLAID_FORM_PAGE = (
+    r"""<!doctype html><meta charset="utf-8"><title>Fabricated Plaid form</title>
+<form id="plaid-form" method="get" action="/submission.html"
+    target="plaid-form-submission"></form>
+<iframe name="plaid-form-submission" src="/submission.html?initial=1"
+    title="Fabricated form submission"></iframe>
+<script defer src="https://plaid-form.invalid/link-initialize.js"
+    data-form-id="plaid-form" data-env="sandbox"
+    data-token="public-sandbox-00000000-0000-0000-0000-000000000001"
+    data-client-name="Fabricated form integration" data-product="auth"
+    data-select-account="true" data-webhook="https://fixture.invalid/webhook">
+</script><script>
+"""
+    + BROWSER_HARNESS
+    + r"""
+window.plaidFormReady = true;
+</script>"""
+)
+
+
 @tagged("post_install", "-at_install")
 class TestPlaidLinkLifecycle(HttpCase):
     _fixture_frame_proxy = FrameProxy
@@ -100,6 +121,7 @@ class TestPlaidLinkLifecycle(HttpCase):
 
     def fetch_proxy(self, url):
         parsed = urlparse(url)
+        content_type = "text/html; charset=utf-8"
         if parsed.scheme == "https" and parsed.hostname in (
             "cdn.plaid.com",
             "secure.plaid.com",
@@ -108,6 +130,20 @@ class TestPlaidLinkLifecycle(HttpCase):
                 content = PLAID_PEER
             elif parsed.path == "/link/v2/stable/link-open.html":
                 content = "<!doctype html><title>Fabricated link-open receipt</title>"
+            else:
+                return super().fetch_proxy(url)
+        elif parsed.scheme == "https" and parsed.hostname == "plaid-form.invalid":
+            if parsed.path == "/form.html":
+                content = PLAID_FORM_PAGE
+            elif parsed.path == "/link-initialize.js":
+                sdk = (
+                    Path(__file__).resolve().parents[1]
+                    / "static/src/lib/link/v2/stable/link-initialize.js"
+                )
+                content = sdk.read_bytes().decode("utf-8")
+                content_type = "application/javascript; charset=utf-8"
+            elif parsed.path == "/submission.html":
+                content = "<!doctype html><title>Fabricated form receipt</title>"
             else:
                 return super().fetch_proxy(url)
         elif (
@@ -127,7 +163,7 @@ class TestPlaidLinkLifecycle(HttpCase):
         self._fixture_requests.put(url)
         response = self.make_fetch_proxy_response(content)
         response["responseHeaders"] = [
-            {"name": "content-type", "value": "text/html; charset=utf-8"},
+            {"name": "content-type", "value": content_type},
             {"name": "cache-control", "value": "no-store"},
             {"name": "access-control-allow-origin", "value": "*"},
             {"name": "access-control-allow-headers", "value": "content-type"},
@@ -253,6 +289,102 @@ class TestPlaidLinkLifecycle(HttpCase):
         self.assertEqual(provider.plaid_access_token, "access-sandbox-fabricated")
         self.assertEqual(provider.plaid_account_id, "fabricated-ui-account")
         self.assertFalse(self._fixture_requests.empty())
+
+    def test_script_tag_integration_submits_the_original_form(self):
+        self.browser_js(
+            "https://plaid-form.invalid/form.html",
+            r"""
+(async () => {
+    const form = document.getElementById("plaid-form");
+    const submitted = document.querySelector("iframe[name='plaid-form-submission']");
+    const button = document.getElementById("plaid-link-button");
+    check(button.form === form && button.textContent === "Link your bank account",
+        "SDK creates the public-token button inside the original form");
+    const initialDeadline = performance.now() + 5000;
+    while ((!submitted.contentWindow.location.search.includes("initial=1")
+        || submitted.contentDocument.readyState !== "complete")
+        && performance.now() < initialDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    check(submitted.contentWindow.location.search === "?initial=1"
+        && submitted.contentDocument.readyState === "complete", "initial receipt page");
+    const frame = frameFor();
+    const configured = (await take(frame, "configure")).message.config;
+    for (const [key, value] of Object.entries({
+        env: "sandbox", token: "public-sandbox-00000000-0000-0000-0000-000000000001",
+        clientName: "Fabricated form integration", product: "auth",
+        selectAccount: true, webhook: "https://fixture.invalid/webhook",
+        isSimpleIntegration: true,
+    })) check(configured[key] === value, "script attribute: " + key);
+    button.disabled = true;
+    await emit(frame, "acknowledged");
+    check(button.disabled === false, "acknowledgement enables the button");
+    button.click();
+    await take(frame, "open");
+    check(frame.style.display === "block", "button opens the real Link frame");
+    await emit(frame, "connected", {metadata: {
+        public_token: "public-sandbox-fabricated",
+        institution: {id: "fixture-bank", name: "Fixture Bank"},
+        accounts: [{id: "fixture-account", name: "Fixture Account"}],
+    }});
+    const expected = {
+        public_token: "public-sandbox-fabricated",
+        "institution[id]": "fixture-bank", "institution[name]": "Fixture Bank",
+        "accounts[0][id]": "fixture-account", "accounts[0][name]": "Fixture Account",
+    };
+    const fields = [...form.querySelectorAll("input[type='hidden']")];
+    check(fields.length === Object.keys(expected).length,
+        "exact hidden-field inventory");
+    for (const [name, value] of Object.entries(expected)) {
+        const matches = fields.filter(input => input.name === name);
+        check(matches.length === 1 && matches[0].value === value,
+            "hidden field: " + name);
+    }
+    const deadline = performance.now() + 5000;
+    while ((!submitted.contentWindow.location.search.includes("public_token=")
+        || submitted.contentDocument.readyState !== "complete")
+        && performance.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    check(submitted.contentDocument.readyState === "complete",
+        "submitted receipt loaded");
+    const parameters = new URL(submitted.contentWindow.location.href).searchParams;
+    check([...parameters].length === Object.keys(expected).length,
+        "exact submitted inventory");
+    for (const [name, value] of Object.entries(expected)) {
+        check(parameters.getAll(name).length === 1 && parameters.get(name) === value,
+            "real form submission: " + name);
+    }
+    check(frame.style.display === "none", "success hides the Link frame");
+    check(location.href === "https://plaid-form.invalid/form.html",
+        "submission keeps the original page alive");
+    console.log("test successful");
+})().catch((error) => console.error(error.stack));
+""",
+            ready=(
+                "window.plaidFormReady === true && typeof Plaid !== 'undefined'"
+                " && typeof Plaid.create === 'function'"
+                " && document.getElementById('plaid-link-button') !== null"
+            ),
+            login="admin",
+            timeout=90,
+        )
+        requests = []
+        while not self._fixture_requests.empty():
+            requests.append(urlparse(self._fixture_requests.get()))
+        form_requests = [
+            request for request in requests if request.hostname == "plaid-form.invalid"
+        ]
+        self.assertEqual(
+            sum(request.path == "/link-initialize.js" for request in form_requests), 1
+        )
+        self.assertEqual(
+            sum(
+                request.path == "/submission.html" and "public_token=" in request.query
+                for request in form_requests
+            ),
+            1,
+        )
 
     def test_real_desktop_link_lifecycle_and_callback_payloads(self):
         self.browser_js(
