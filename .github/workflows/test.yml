@@ -102,6 +102,7 @@ jobs:
       - name: Initialize test db
         run: oca_init_test_database
       - name: Run tests
+        id: coverage_reports
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/js-sessions"
@@ -114,12 +115,13 @@ jobs:
           for file in coverage.xml "$RUNNER_TEMP/collector-python.xml" "$RUNNER_TEMP/collector-tools.lcov" "$RUNNER_TEMP/js-report/lcov.info"; do
             test -s "$file"
           done
+          printf 'files=%s\n' "coverage.xml,$RUNNER_TEMP/collector-python.xml,$RUNNER_TEMP/collector-tools.lcov,$RUNNER_TEMP/js-report/lcov.info" >> "$GITHUB_OUTPUT"
       - uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
         with:
           use_oidc: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
           fail_ci_if_error: true
           disable_search: true
-          files: coverage.xml,${{ runner.temp }}/collector-python.xml,${{ runner.temp }}/collector-tools.lcov,${{ runner.temp }}/js-report/lcov.info
+          files: ${{ steps.coverage_reports.outputs.files }}
       - name: Update .pot files
         run: oca_export_and_push_pot https://x-access-token:${{ secrets.GIT_PUSH_TOKEN }}@github.com/${{ github.repository }}
         if: ${{ matrix.makepot == 'true' && github.event_name == 'push' && github.repository_owner == 'OCA' }}
