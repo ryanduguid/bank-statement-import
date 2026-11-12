@@ -4,11 +4,13 @@
 """Keep fabricated iframe responses local after Chrome process changes."""
 
 import json
+import logging
 import threading
 from concurrent.futures import InvalidStateError
 from urllib.parse import urlsplit
 
 CHILD_SETUP_TIMEOUT = 10
+_logger = logging.getLogger(__name__)
 
 
 class FrameProxy:
@@ -58,7 +60,9 @@ class FrameProxy:
                 )
             except Exception:
                 # The original browser teardown still closes every target.
-                pass
+                _logger.debug(
+                    "Child fixture detach failed during teardown", exc_info=True
+                )
 
     def command(self, session, method, params, acknowledged=None):
         with self.lock:
@@ -212,7 +216,9 @@ def fixture_browser(original, host):
                 try:
                     result.set_exception(error)
                 except InvalidStateError:
-                    pass
+                    _logger.debug(
+                        "Fixture failure result already completed", exc_info=True
+                    )
 
         def stop(self):
             proxy = self._owned_fixture_proxy
@@ -227,6 +233,7 @@ def fixture_browser(original, host):
                     if proxy is not None:
                         proxy.close()
                 finally:
-                    super().stop()
+                    stopped = super().stop()
+            return stopped
 
     return FixtureBrowser
