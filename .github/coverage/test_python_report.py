@@ -3,6 +3,7 @@
 
 """The native Python report must retain tracked code that no test imported."""
 
+import os
 import runpy
 import subprocess
 import sys
@@ -10,8 +11,6 @@ import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
-
-import coverage
 
 
 class PythonReportTests(unittest.TestCase):
@@ -33,18 +32,26 @@ class PythonReportTests(unittest.TestCase):
         self.git("add", "--", ".")
         self.data_file = self.root / "native.coverage"
         self.output = self.root / "coverage.xml"
-        collector = coverage.Coverage(
-            data_file=str(self.data_file),
-            config_file=False,
-            branch=True,
-            include=[str(self.root / "*")],
+        fixture_config = self.root / "fixture-coverage.ini"
+        fixture_config.write_text("")
+        # Keep fixture measurement from suspending this test's collector.
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "coverage",
+                "run",
+                "--rcfile=" + str(fixture_config),
+                "--branch",
+                "--data-file=" + str(self.data_file),
+                "--include=" + str(self.root / "*"),
+                str(self.loaded),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
         )
-        collector.start()
-        try:
-            runpy.run_path(str(self.loaded))
-        finally:
-            collector.stop()
-            collector.save()
 
     def git(self, *arguments):
         subprocess.run(
@@ -56,9 +63,18 @@ class PythonReportTests(unittest.TestCase):
         )
 
     def report(self):
+        # An explicit runner saves even when the reporter creates Coverage.
         return subprocess.run(
             [
                 sys.executable,
+                "-m",
+                "coverage",
+                "run",
+                "--rcfile=" + str(Path(__file__).with_name("coverage.ini")),
+                "--data-file="
+                + os.environ.get(
+                    "COVERAGE_FILE", str(self.root / "collector.coverage")
+                ),
                 str(Path(__file__).with_name("python_report.py")),
                 str(self.root),
                 str(self.data_file),
@@ -69,6 +85,20 @@ class PythonReportTests(unittest.TestCase):
             timeout=15,
             check=False,
         )
+
+    def test_import_exposes_inventory_without_writing_a_report(self):
+        native_data = self.data_file.read_bytes()
+        reporter = runpy.run_path(str(Path(__file__).with_name("python_report.py")))
+        self.assertEqual(
+            set(reporter["addon_sources"](self.root)),
+            {
+                str(self.loaded),
+                str(self.unloaded),
+                str(self.loaded.with_name("__init__.py")),
+            },
+        )
+        self.assertEqual(self.data_file.read_bytes(), native_data)
+        self.assertFalse(self.output.exists())
 
     def test_unloaded_code_has_real_zero_lines_and_branches(self):
         result = self.report()

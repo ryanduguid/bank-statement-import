@@ -9,10 +9,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const vm = require('node:vm');
+const { spawnSync } = require('node:child_process');
 const { instrument, inventory } = require('./instrument.cjs');
 const { merge } = require('./merge.cjs');
 
-function fixture(t, source = '// A comment is not an executable statement.\n\nfunction branch(value) {\n  if (value) return 17;\n  return 29;\n}\n') {
+function fixture(t, source = '// A comment is not an executable statement.\n\nfunction branch(value) {\n  if (value) return 17;\n  return 29;\n}\n', repository = 'account-invoicing') {
   const base = fs.realpathSync(os.tmpdir());
   const root = fs.mkdtempSync(path.join(base, 'oca-coverage-test-'));
   t.after(() => {
@@ -21,14 +22,16 @@ function fixture(t, source = '// A comment is not an executable statement.\n\nfu
     fs.rmSync(root, { recursive: true });
   });
   const copy = path.join(root, 'source');
-  for (const relative of inventory['account-invoicing']) {
+  for (const relative of inventory[repository]) {
     fs.mkdirSync(path.dirname(path.join(copy, relative)), { recursive: true });
     fs.writeFileSync(path.join(copy, relative), source);
   }
   const receipts = path.join(root, 'receipts');
   const sessions = path.join(root, 'sessions');
   fs.mkdirSync(sessions);
-  fs.writeFileSync(path.join(sessions, 'installed-1-odoo19.txt'), 'Native Odoo 19 browser coverage hook installed\n');
+  const major = repository === 'bank-statement-import' ? 18 : 19;
+  fs.writeFileSync(path.join(sessions, 'installed-1-odoo' + major + '.txt'),
+    'Native Odoo ' + major + ' browser coverage hook installed\n');
   return { root, copy, receipts, sessions };
 }
 
@@ -152,5 +155,70 @@ test('a valid hook without browser documents retains the full zero inventory', t
     assert(Object.values(counts.s).every(value => value === 0));
     assert(Object.values(counts.f).every(value => value === 0));
     assert(Object.values(counts.b).flat().every(value => value === 0));
+  }
+});
+
+for (const script of ['instrument.cjs', 'merge.cjs']) test(script + ' CLI refuses incomplete arguments', () => {
+  const result = spawnSync(process.execPath, [path.join(__dirname, script)], { encoding: 'utf8', timeout: 15000 });
+  assert.equal(result.error, undefined);
+  assert.equal(result.signal, null);
+  assert.notEqual(result.status, 0);
+  assert(result.stderr.includes('Usage: ' + script), result.stderr);
+});
+
+test('CLI round trip preserves paths with spaces, real counters and unloaded originals', t => {
+  const data = fixture(t);
+  const source = path.join(data.root, 'source with spaces');
+  fs.renameSync(data.copy, source);
+  data.copy = source;
+  data.receipts = path.join(data.root, 'receipts with spaces');
+  const destination = path.join(data.root, 'report with spaces');
+  const instrumented = spawnSync(process.execPath, [
+    path.join(__dirname, 'instrument.cjs'), 'account-invoicing', data.copy, data.receipts,
+  ], { encoding: 'utf8', timeout: 15000 });
+  assert.equal(instrumented.error, undefined);
+  assert.equal(instrumented.signal, null);
+  assert.equal(instrumented.status, 0, instrumented.stderr);
+  const receipt = JSON.parse(fs.readFileSync(path.join(data.receipts, 'inventory.json')));
+  assert.deepEqual(Object.keys(receipt.files).sort(), [...inventory['account-invoicing']].sort());
+  const observed = observe(data);
+  fs.writeFileSync(path.join(data.sessions, 'observed.json'),
+    JSON.stringify({ browser: 'fixture', context: 1, coverage: observed }));
+  const merged = spawnSync(process.execPath, [
+    path.join(__dirname, 'merge.cjs'), 'account-invoicing', data.copy,
+    path.join(data.receipts, 'inventory.json'), data.sessions, destination,
+  ], { encoding: 'utf8', timeout: 15000 });
+  assert.equal(merged.error, undefined);
+  assert.equal(merged.signal, null);
+  assert.equal(merged.status, 0, merged.stderr);
+  const result = JSON.parse(fs.readFileSync(path.join(destination, 'coverage-final.json')));
+  const [loaded, unloaded] = inventory['account-invoicing'];
+  assert.deepEqual(Object.keys(result).sort(), [...inventory['account-invoicing']].sort());
+  for (const field of ['s', 'f', 'b']) {
+    assert.deepEqual(result[loaded][field], observed[receipt.files[loaded].coverageKey][field]);
+    assert.deepEqual(result[unloaded][field], receipt.files[unloaded].seed[field]);
+  }
+  const lcov = fs.readFileSync(path.join(destination, 'lcov.info'), 'utf8');
+  for (const filename of inventory['account-invoicing']) assert(lcov.includes('SF:' + filename));
+});
+
+test('bank inventory measures vendored SDK execution and retains both unloaded modules', t => {
+  const data = fixture(t, undefined, 'bank-statement-import');
+  const records = instrument('bank-statement-import', data.copy, data.receipts);
+  assert.deepEqual(Object.keys(records).sort(), [...inventory['bank-statement-import']].sort());
+  const sdk = inventory['bank-statement-import'].find(filename => filename.includes('/static/src/lib/'));
+  assert.equal(records[sdk].provenance, 'modified vendored SDK; included');
+  const context = vm.createContext({});
+  new vm.Script(fs.readFileSync(path.join(data.copy, sdk), 'utf8')).runInContext(context);
+  assert.equal(new vm.Script('branch(true)').runInContext(context), 17);
+  const observed = JSON.parse(JSON.stringify(context.__coverage__));
+  fs.writeFileSync(path.join(data.sessions, 'observed.json'),
+    JSON.stringify({ browser: 'fixture', context: 1, coverage: observed }));
+  const result = merge('bank-statement-import', data.copy, path.join(data.receipts, 'inventory.json'),
+    data.sessions, path.join(data.root, 'report'));
+  assert.deepEqual(result.files().sort(), [...inventory['bank-statement-import']].sort());
+  for (const filename of result.files()) {
+    const expected = filename === sdk ? observed[records[sdk].coverageKey] : records[filename].seed;
+    for (const field of ['s', 'f', 'b']) assert.deepEqual(result.fileCoverageFor(filename).data[field], expected[field]);
   }
 });
