@@ -2,14 +2,14 @@
 [![Runboat](https://img.shields.io/badge/runboat-Try%20me-875A7B.png?style=flat&labelColor=000000&color=66023C)](https://runboat.odoo-community.org/builds?repo=OCA/bank-statement-import&target_branch=18.0)
 [![Pre-commit Status](https://img.shields.io/github/actions/workflow/status/OCA/bank-statement-import/pre-commit.yml?branch=18.0&label=pre-commit&style=flat&labelColor=000000)](https://github.com/OCA/bank-statement-import/actions/workflows/pre-commit.yml?query=branch%3A18.0)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/OCA/bank-statement-import/test.yml?branch=18.0&label=tests&style=flat&labelColor=000000)](https://github.com/OCA/bank-statement-import/actions/workflows/test.yml?query=branch%3A18.0)
-[![codecov](https://img.shields.io/codecov/c/github/OCA/bank-statement-import/18.0?style=flat&labelColor=000000)](https://codecov.io/gh/OCA/bank-statement-import)
+[![codecov](https://img.shields.io/codecov/c/github/ryanduguid/bank-statement-import/18.0?style=flat&labelColor=000000)](https://codecov.io/gh/ryanduguid/bank-statement-import)
 [![Translation Status](https://img.shields.io/badge/dynamic/xml?url=https%3A%2F%2Ftranslation.odoo-community.org%2Fwidgets%2Fbank-statement-import-18-0%2F-%2Fsvg-badge.svg&query=substring-after%28%2F*%5Blocal-name%28%29%3D%27svg%27%5D%2F*%5Blocal-name%28%29%3D%27title%27%5D%2C%27translated+%27%29&label=translated&style=flat&labelColor=000000&color=66023C)](https://translation.odoo-community.org/engage/bank-statement-import-18-0/?utm_source=widget)
 
 <!-- /!\ do not modify above this line -->
 
 # bank-statement-import
 
-The badges above refer to
+The Codecov badge reports this fork’s `18.0` branch. The other badges above refer to
 [upstream OCA/bank-statement-import](https://github.com/OCA/bank-statement-import).
 
 <div align="center">
@@ -22,7 +22,7 @@ The badges above refer to
 
 ryanduguid/bank-statement-import is [Ryan Duguid](https://duguid.com.au/)'s Odoo 18.0 fork of [OCA/bank-statement-import](https://github.com/OCA/bank-statement-import), adding account identity, transaction integrity and sheet date fixes for Odoo 18.0 users who need those changes in their bank statement imports.
 
-GitHub Actions is off for this fork, so `test.yml` and `pre-commit.yml` do not run on GitHub. Run their steps locally before merging.
+GitHub Actions runs `test.yml` and `pre-commit.yml` for this fork.
 
 bank-statement-import
 

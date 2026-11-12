@@ -266,7 +266,7 @@ class TestPlaidLinkLifecycle(HttpCase):
     focus.textContent = "Return focus here";
     document.body.appendChild(focus);
     focus.focus();
-    const successes = [], exits = [], events = [];
+    const successes = [], exits = [], events = [], results = [];
     let loads = 0;
     try {
         for (const options of [{token: "fixture"}, {onSuccess() {}}]) {
@@ -279,6 +279,7 @@ class TestPlaidLinkLifecycle(HttpCase):
             onSuccess: (...args) => successes.push(args),
             onExit: (...args) => exits.push(args),
             onEvent: (...args) => events.push(args),
+            onResult: (result) => results.push(result),
             onLoad: () => { loads += 1; },
         });
         const frame = frameFor();
@@ -288,7 +289,19 @@ class TestPlaidLinkLifecycle(HttpCase):
         await take(frame, "open");
         check(configured.token === "link-sandbox-fabricated", "configured token");
         check(configured.isUsingOnEventCallback === true, "event callback contract");
+        check(configured.isUsingOnResultCallback === true, "result callback contract");
         check(loads === 1 && document.body.style.overflow === "hidden", "open state");
+        const incremental = [
+            {status: "pending", accounts: []},
+            {status: "available", accounts: [{id: "fabricated-account"}]},
+        ];
+        for (const result of incremental) {
+            await emit(frame, "result", {incremental_result: result});
+        }
+        check(JSON.stringify(results) === JSON.stringify(incremental),
+            "incremental results arrive unchanged and in order");
+        check(successes.length === 0 && exits.length === 0
+            && frame.style.display === "block", "results do not complete the link");
         await emit(frame, "connected", {metadata: {public_token: "wrong-instance"}},
             {instance: "not-this-instance"});
         await emit(frame, "unused", {}, {kind: "raw", value: "{malformed"});
@@ -340,6 +353,151 @@ class TestPlaidLinkLifecycle(HttpCase):
 })().catch((error) => console.error(error.stack));
 """,
             ready="typeof Plaid !== 'undefined' && typeof Plaid.create === 'function'",
+            login="admin",
+            timeout=90,
+        )
+        self.assertFalse(self._fixture_requests.empty())
+
+    def test_flow_callbacks_preserve_payloads_and_suppress_exit_after_success(self):
+        self.browser_js(
+            "/web",
+            BROWSER_HARNESS
+            + r"""
+(async () => {
+    let handler;
+    const bodyStyle = document.body.style.cssText;
+    const previousFocus = document.activeElement;
+    const successes = [], exits = [], events = [];
+    try {
+        handler = Plaid.create({
+            env: "sandbox", token: "link-sandbox-fabricated",
+            onSuccess: (...args) => successes.push(args),
+            onExit: (...args) => exits.push(args),
+            onEvent: (...args) => events.push(args),
+        });
+        const frame = frameFor();
+        handler.open();
+        const instance = (await take(frame, "configure")).message.config.uniqueId;
+        check(typeof instance === "string" && instance.length > 0,
+            "owned configure supplies the instance");
+        await take(frame, "open");
+        const eventMetadata = {institution_id: "fixture-institution"};
+        await emit(frame, "flow-event", {}, {kind: "raw", value: JSON.stringify({
+            action: "plaid_flow-" + instance + "::event",
+            event_name: "SELECT_INSTITUTION", metadata: eventMetadata,
+        })});
+        check(JSON.stringify(events) === JSON.stringify([
+            ["SELECT_INSTITUTION", eventMetadata],
+        ]), "Flow event preserves its name and metadata");
+        const successMetadata = {status: "completed"};
+        await emit(frame, "flow-success", {}, {kind: "raw", value: JSON.stringify({
+            action: "plaid_flow-" + instance + "::success", metadata: successMetadata,
+        })});
+        check(JSON.stringify(successes) === JSON.stringify([["", successMetadata]]),
+            "Flow success preserves metadata and supplies an empty token");
+        check(frame.style.display === "block", "Flow success awaits the exit message");
+        await emit(frame, "flow-exit", {}, {kind: "raw", value: JSON.stringify({
+            action: "plaid_flow-" + instance + "::exit",
+            error: null, metadata: successMetadata,
+        })});
+        check(exits.length === 0 && frame.style.display === "none",
+            "exit after Flow success hides the frame without reporting cancellation");
+        handler.destroy();
+        handler = null;
+
+        handler = Plaid.create({
+            env: "sandbox", token: "link-sandbox-fabricated-cancel",
+            onSuccess: (...args) => successes.push(args),
+            onExit: (...args) => exits.push(args),
+        });
+        const cancelled = frameFor();
+        handler.open();
+        const cancelledConfig = (await take(cancelled, "configure")).message.config;
+        const cancelledId = cancelledConfig.uniqueId;
+        await take(cancelled, "open");
+        const error = {error_code: "FIXTURE_CANCELLED"};
+        const metadata = {status: "cancelled"};
+        await emit(cancelled, "flow-exit", {}, {kind: "raw", value: JSON.stringify({
+            action: "plaid_flow-" + cancelledId + "::exit", error, metadata,
+        })});
+        check(JSON.stringify(exits) === JSON.stringify([[error, metadata]]),
+            "Flow cancellation preserves error and metadata");
+        check(successes.length === 1 && cancelled.style.display === "none",
+            "cancellation does not report success and hides its frame");
+    } finally {
+        if (handler) handler.destroy();
+        window.removeEventListener("message", record);
+        document.body.style.cssText = bodyStyle;
+        if (previousFocus?.isConnected) previousFocus.focus();
+    }
+    console.log("test successful");
+})().catch((error) => console.error(error.stack));
+""",
+            ready="typeof Plaid !== 'undefined' && typeof Plaid.create === 'function'",
+            login="admin",
+            timeout=90,
+        )
+        self.assertFalse(self._fixture_requests.empty())
+
+    def test_embedded_component_variants_reach_the_owned_frame(self):
+        self.browser_js(
+            "/web",
+            BROWSER_HARNESS
+            + r"""
+(async () => {
+    let handler;
+    const bodyStyle = document.body.style.cssText;
+    const previousFocus = document.activeElement;
+    const container = document.createElement("section");
+    const sibling = document.createElement("p");
+    sibling.textContent = "Unrelated content";
+    document.body.append(container, sibling);
+    try {
+        for (const [type, key] of [
+            ["button", "button_component_configuration"],
+            ["mini_card", "mini_card_component_configuration"],
+            ["chip", "chip_component_configuration"],
+        ]) {
+            const placeholder = document.createElement("p");
+            placeholder.textContent = "Embedded Link placeholder";
+            container.appendChild(placeholder);
+            handler = Plaid.createEmbedded({
+                env: "sandbox", token: "link-sandbox-fabricated", onSuccess() {},
+                embeddedComponentConfiguration: {type},
+            }, container);
+            const embedded = container.querySelector(
+                "iframe[id^='plaid-embedded-link-iframe-']"
+            );
+            check(embedded !== null, "owned embedded iframe for " + type);
+            const configured = (await take(embedded, "configure")).message.config;
+            await take(embedded, "open");
+            check(JSON.stringify(configured.embeddedComponentConfiguration) ===
+                JSON.stringify({[key]: {}}), "component configuration for " + type);
+            check(container.children.length === 1 && !placeholder.isConnected,
+                "embedding replaces only the supplied container's children");
+            check(sibling.isConnected && sibling.textContent === "Unrelated content",
+                "embedding preserves its sibling");
+            handler.destroy();
+            handler = null;
+            check(!embedded.isConnected && container.isConnected
+                && container.children.length === 0 && sibling.isConnected,
+                "destroy preserves the host and sibling for " + type);
+        }
+    } finally {
+        if (handler) handler.destroy();
+        window.removeEventListener("message", record);
+        document.body.style.cssText = bodyStyle;
+        container.remove();
+        sibling.remove();
+        if (previousFocus?.isConnected) previousFocus.focus();
+    }
+    console.log("test successful");
+})().catch((error) => console.error(error.stack));
+""",
+            ready=(
+                "typeof Plaid !== 'undefined'"
+                " && typeof Plaid.createEmbedded === 'function'"
+            ),
             login="admin",
             timeout=90,
         )
