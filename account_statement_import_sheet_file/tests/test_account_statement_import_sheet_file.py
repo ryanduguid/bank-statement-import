@@ -60,6 +60,66 @@ class TestAccountStatementImportSheetFile(Common):
         self.assertEqual(len(statement), 1)
         self.assertEqual(len(statement.line_ids), 2)
 
+    def test_csv_preserves_transaction_audit_details(self):
+        self.sample_statement_map.write(
+            {
+                "balance_column": "Balance",
+                "transaction_id_column": "Transaction ID",
+                "bank_name_column": "Bank",
+                "bank_account_column": "Account",
+                "reference_column": "Reference",
+                "notes_column": "Notes",
+                "original_currency_column": False,
+                "original_amount_column": False,
+                "partner_name_column": False,
+            }
+        )
+        csv_data = (
+            b"Date,Label,Amount,Balance,Transaction ID,Bank,Account,Reference,Notes\n"
+            b"09/02/2026,Fee,-25.00,1100.00,,,,,Service charge\n"
+            b"09/01/2026,Deposit,125.00,1125.00,TX-001,Fixture Bank,"
+            b"FIXTURE-001,DEP-001,Counter deposit\n"
+        )
+        currency, _account, statements = self.parser.with_context(
+            journal_id=self.journal.id
+        ).parse(csv_data, self.sample_statement_map, "audit.csv")
+        self.assertEqual(currency, "USD")
+        self.assertEqual(len(statements), 1)
+        statement = statements[0]
+        self.assertEqual(statement["date"], datetime(2026, 9, 1).date())
+        # Opening 1000 + deposit 125 - fee 25 = closing 1100.
+        self.assertEqual(statement["balance_start"], 1000)
+        self.assertEqual(statement["balance_end_real"], 1100)
+        transactions = statement["transactions"]
+        self.assertEqual(len(transactions), 2)
+        deposit, fee = transactions
+        self.assertEqual(
+            [line["payment_ref"] for line in transactions], ["Deposit", "Fee"]
+        )
+        self.assertEqual(
+            [line["date"] for line in transactions],
+            [datetime(2026, 9, 1), datetime(2026, 9, 2)],
+        )
+        self.assertEqual([line["amount"] for line in transactions], ["125.0", "-25.0"])
+        self.assertEqual(deposit["ref"], "DEP-001")
+        self.assertEqual(deposit["account_number"], "FIXTURE-001")
+        self.assertEqual(
+            deposit["unique_import_id"],
+            f"TX-001-{int(datetime(2026, 9, 1).timestamp())}",
+        )
+        self.assertEqual(
+            deposit["narration"],
+            "Counter deposit\nBank: Fixture Bank; Account: FIXTURE-001; "
+            "Transaction ID: TX-001;",
+        )
+        self.assertEqual(fee["narration"], "Service charge")
+        for name in ("unique_import_id", "ref", "account_number"):
+            self.assertNotIn(name, fee)
+        for line in transactions:
+            self.assertEqual(line["currency_id"], self.currency_usd.id)
+            self.assertNotIn("foreign_currency_id", line)
+            self.assertNotIn("amount_currency", line)
+
     def test_import_empty_csv_file(self):
         wizard = self._get_import_wizard("fixtures/empty_statement_en.csv")
         with self.assertRaises(UserError):
