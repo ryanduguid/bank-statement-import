@@ -7,6 +7,7 @@
 from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
+from unittest.mock import patch
 
 from openpyxl import Workbook
 
@@ -120,6 +121,58 @@ class TestAccountStatementImportSheetFile(Common):
             self.assertEqual(line["currency_id"], self.currency_usd.id)
             self.assertNotIn("foreign_currency_id", line)
             self.assertNotIn("amount_currency", line)
+
+    def test_yearless_csv_dates_use_the_current_or_previous_year(self):
+        self.sample_statement_map.write(
+            {
+                "timestamp_format": "%m/%d",
+                "balance_column": "Balance",
+                "original_currency_column": False,
+                "original_amount_column": False,
+                "partner_name_column": False,
+                "bank_account_column": False,
+            }
+        )
+        cases = [
+            (
+                b"01/15,Deposit,125.00,1125.00\n",
+                "Deposit",
+                "125.0",
+                1125,
+                datetime(2026, 1, 15),
+            ),
+            (b"12/15,Fee,-25.00,975.00\n", "Fee", "-25.0", 975, datetime(2025, 12, 15)),
+        ]
+        with patch(
+            "odoo.addons.account_statement_import_sheet_file.models."
+            "account_statement_import_sheet_parser.datetime",
+            wraps=datetime,
+        ) as clock:
+            clock.now.return_value = datetime(2026, 6, 30, 12)
+            for row, label, amount, closing, expected_date in cases:
+                with self.subTest(label=label):
+                    currency, _account, statements = self.parser.with_context(
+                        journal_id=self.journal.id
+                    ).parse(
+                        b"Date,Label,Amount,Balance\n" + row,
+                        self.sample_statement_map,
+                        "yearless.csv",
+                    )
+                    self.assertEqual(currency, "USD")
+                    self.assertEqual(len(statements), 1)
+                    statement = statements[0]
+                    self.assertEqual(statement["date"], expected_date.date())
+                    # Closing less the signed transaction independently gives 1000.
+                    self.assertEqual(statement["balance_start"], 1000)
+                    self.assertEqual(statement["balance_end_real"], closing)
+                    self.assertEqual(len(statement["transactions"]), 1)
+                    transaction = statement["transactions"][0]
+                    self.assertEqual(transaction["date"], expected_date)
+                    self.assertEqual(transaction["payment_ref"], label)
+                    self.assertEqual(transaction["amount"], amount)
+                    self.assertEqual(transaction["currency_id"], self.currency_usd.id)
+                    self.assertNotIn("foreign_currency_id", transaction)
+                    self.assertNotIn("amount_currency", transaction)
 
     def test_import_empty_csv_file(self):
         wizard = self._get_import_wizard("fixtures/empty_statement_en.csv")
