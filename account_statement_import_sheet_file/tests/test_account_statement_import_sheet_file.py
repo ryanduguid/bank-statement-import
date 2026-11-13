@@ -4,6 +4,7 @@
 # Copyright 2025 Jacques-Etienne Baudoux (BCIM) <je@bcim.be>
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 
+from base64 import b64encode
 from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
@@ -121,6 +122,67 @@ class TestAccountStatementImportSheetFile(Common):
             self.assertEqual(line["currency_id"], self.currency_usd.id)
             self.assertNotIn("foreign_currency_id", line)
             self.assertNotIn("amount_currency", line)
+
+    def test_utf16_csv_preserves_dates_labels_and_balances(self):
+        self.sample_statement_map.write(
+            {
+                "balance_column": "Balance",
+                "original_currency_column": False,
+                "original_amount_column": False,
+                "partner_name_column": False,
+                "bank_account_column": False,
+            }
+        )
+        csv_data = (
+            "Date,Label,Amount,Balance\n"
+            "09/02/2026,Café fee,-25.00,1100.00\n"
+            "09/01/2026,Café deposit,125.00,1125.00\n"
+        ).encode("utf-16")
+        for encoding in ("utf-8", "utf-16"):
+            with self.subTest(configured_encoding=encoding):
+                self.sample_statement_map.file_encoding = encoding
+                currency, _account, statements = self.parser.with_context(
+                    journal_id=self.journal.id
+                ).parse(csv_data, self.sample_statement_map, "utf16.csv")
+                self.assertEqual(currency, "USD")
+                self.assertEqual(len(statements), 1)
+                statement = statements[0]
+                self.assertEqual(statement["date"], datetime(2026, 9, 1).date())
+                self.assertEqual(statement["balance_start"], 1000)
+                self.assertEqual(statement["balance_end_real"], 1100)
+                transactions = statement["transactions"]
+                self.assertEqual(len(transactions), 2)
+                self.assertEqual(
+                    [line["date"] for line in transactions],
+                    [datetime(2026, 9, 1), datetime(2026, 9, 2)],
+                )
+                self.assertEqual(
+                    [line["payment_ref"] for line in transactions],
+                    ["Café deposit", "Café fee"],
+                )
+                self.assertEqual(
+                    [line["amount"] for line in transactions], ["125.0", "-25.0"]
+                )
+                for line in transactions:
+                    self.assertEqual(line["currency_id"], self.currency_usd.id)
+                    self.assertNotIn("foreign_currency_id", line)
+                    self.assertNotIn("amount_currency", line)
+
+    def test_utf16_bom_without_csv_data_is_refused(self):
+        self.sample_statement_map.file_encoding = "utf-16"
+        self.assertFalse(self.AccountBankStatement.search(self.statement_domain))
+        wizard = self.AccountStatementImport.with_context(
+            journal_id=self.journal.id, account_statement_import_sheet_file_test=True
+        ).create(
+            {
+                "statement_filename": "empty-utf16.csv",
+                "statement_file": b64encode(b"\xff\xfe"),
+                "sheet_mapping_id": self.sample_statement_map.id,
+            }
+        )
+        with self.assertRaisesRegex(UserError, "Failed to parse file"):
+            wizard.import_file_button()
+        self.assertFalse(self.AccountBankStatement.search(self.statement_domain))
 
     def test_yearless_csv_dates_use_the_current_or_previous_year(self):
         self.sample_statement_map.write(
