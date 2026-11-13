@@ -10,7 +10,8 @@ from io import BytesIO
 
 from openpyxl import Workbook
 
-from odoo.exceptions import UserError
+from odoo.exceptions import UserError, ValidationError
+from odoo.tests import Form
 from odoo.tools import float_round, mute_logger
 
 from .common import Common
@@ -378,6 +379,178 @@ class TestAccountStatementImportSheetFile(Common):
         statement = self.AccountBankStatement.search(self.statement_domain)
         self.assertEqual(len(statement), 1)
         self.assertEqual(len(statement.line_ids), 3)
+
+    def test_mapping_separator_onchanges_preserve_import_amounts(self):
+        cases = (
+            (
+                "comma",
+                "dot",
+                "float_thousands_sep",
+                "dot",
+                "dot",
+                "comma",
+                "1.234,56",
+                "-25,00",
+            ),
+            (
+                "dot",
+                "comma",
+                "float_thousands_sep",
+                "comma",
+                "comma",
+                "dot",
+                "1,234.56",
+                "-25.00",
+            ),
+            (
+                "dot",
+                "comma",
+                "float_decimal_sep",
+                "dot",
+                "comma",
+                "dot",
+                "1,234.56",
+                "-25.00",
+            ),
+            (
+                "comma",
+                "dot",
+                "float_decimal_sep",
+                "comma",
+                "dot",
+                "comma",
+                "1.234,56",
+                "-25,00",
+            ),
+            (
+                "comma",
+                "dot",
+                "float_thousands_sep",
+                "quote",
+                "quote",
+                "dot",
+                "1'234.56",
+                "-25.00",
+            ),
+            (
+                "comma",
+                "dot",
+                "float_decimal_sep",
+                "none",
+                "comma",
+                "none",
+                "123456",
+                "-2500",
+            ),
+        )
+        for (
+            thousands,
+            decimal,
+            changed,
+            value,
+            expected_thousands,
+            expected_decimal,
+            deposit,
+            fee,
+        ) in cases:
+            with self.subTest(field=changed, value=value, initial=(thousands, decimal)):
+                mapping = self.sample_statement_map.copy(
+                    {
+                        "name": "Separator import fixture",
+                        "float_thousands_sep": thousands,
+                        "float_decimal_sep": decimal,
+                        "delimiter": "semicolon",
+                        "timestamp_format": "%m/%d/%Y",
+                        "amount_type": "simple_value",
+                        "amount_column": "Amount",
+                        "balance_column": False,
+                        "currency_column": False,
+                        "original_currency_column": False,
+                        "original_amount_column": False,
+                        "partner_name_column": False,
+                        "bank_name_column": False,
+                        "bank_account_column": False,
+                        "transaction_id_column": False,
+                        "reference_column": False,
+                        "notes_column": False,
+                    }
+                )
+                with Form(
+                    mapping,
+                    view="account_statement_import_sheet_file.account_statement_import_sheet_mapping_tree",
+                ) as mapping_form:
+                    setattr(mapping_form, changed, value)
+                self.assertEqual(mapping.float_thousands_sep, expected_thousands)
+                self.assertEqual(mapping.float_decimal_sep, expected_decimal)
+                csv_data = (
+                    "Date;Label;Amount\n"
+                    f"09/01/2026;Deposit;{deposit}\n"
+                    f"09/02/2026;Fee;{fee}\n"
+                ).encode()
+                currency, _account, statements = self.parser.with_context(
+                    journal_id=self.journal.id
+                ).parse(csv_data, mapping, "separators.csv")
+                self.assertEqual(currency, "USD")
+                self.assertEqual(len(statements), 1)
+                transactions = statements[0]["transactions"]
+                self.assertEqual(len(transactions), 2)
+                self.assertEqual(
+                    [line["date"] for line in transactions],
+                    [datetime(2026, 9, 1), datetime(2026, 9, 2)],
+                )
+                self.assertEqual(
+                    [line["payment_ref"] for line in transactions], ["Deposit", "Fee"]
+                )
+                self.assertEqual(
+                    [line["amount"] for line in transactions], ["1234.56", "-25.0"]
+                )
+                self.assertEqual(
+                    sum(Decimal(line["amount"]) for line in transactions),
+                    Decimal("1209.56"),
+                )
+                for line in transactions:
+                    self.assertEqual(line["currency_id"], self.currency_usd.id)
+                    self.assertNotIn("foreign_currency_id", line)
+                    self.assertNotIn("amount_currency", line)
+
+    def test_mapping_rejects_incomplete_amount_configuration(self):
+        cases = (
+            (
+                {"amount_type": "simple_value", "amount_column": False},
+                "Use amount_column",
+            ),
+            (
+                {"amount_type": "absolute_value", "debit_credit_column": False},
+                "Use debit_credit_column",
+            ),
+            (
+                {
+                    "amount_type": "distinct_credit_debit",
+                    "amount_debit_column": False,
+                    "amount_credit_column": "Credit",
+                },
+                "Use amount_debit_column and amount_credit_column",
+            ),
+            (
+                {
+                    "amount_type": "distinct_credit_debit",
+                    "amount_debit_column": "Debit",
+                    "amount_credit_column": False,
+                },
+                "Use amount_debit_column and amount_credit_column",
+            ),
+            ({"offset_column": -1}, "Offsets cannot be negative"),
+        )
+        mapping = self.sample_statement_map.copy({"name": "Invalid mapping fixture"})
+        for values, message in cases:
+            with self.subTest(values=values):
+                original = {field: mapping[field] for field in values}
+                with (
+                    self.assertRaisesRegex(ValidationError, message),
+                    self.env.cr.savepoint(),
+                ):
+                    mapping.with_context(lang="en_US").write(values)
+                self.assertEqual({field: mapping[field] for field in values}, original)
 
     def test_parse_decimal(self):
         # Define a series of test cases
