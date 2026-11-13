@@ -394,6 +394,8 @@ class TestPlaidLinkLifecycle(HttpCase):
 (async () => {
     let handler;
     const bodyStyle = document.body.style.cssText;
+    const originalWarn = console.warn, warnings = [];
+    console.warn = (...args) => warnings.push(args);
     const focus = document.createElement("button");
     focus.textContent = "Return focus here";
     document.body.appendChild(focus);
@@ -408,12 +410,17 @@ class TestPlaidLinkLifecycle(HttpCase):
         }
         handler = Plaid.create({
             env: "sandbox", token: "link-sandbox-fabricated",
+            forceIframe: false,
             onSuccess: (...args) => successes.push(args),
             onExit: (...args) => exits.push(args),
             onEvent: (...args) => events.push(args),
             onResult: (result) => results.push(result),
             onLoad: () => { loads += 1; },
         });
+        check(warnings.some(([message]) => message ===
+            "The forceIframe option has been deprecated. " +
+            "Link will use an iframe by default when possible."),
+            "deprecated iframe option reports its public warning");
         const frame = frameFor();
         check(frame.style.display === "none", "initially hidden");
         handler.open();
@@ -477,6 +484,7 @@ class TestPlaidLinkLifecycle(HttpCase):
         check(refused, "destroyed handler cannot reopen");
     } finally {
         if (handler) handler.destroy();
+        console.warn = originalWarn;
         window.removeEventListener("message", record);
         document.body.style.cssText = bodyStyle;
         focus.remove();
@@ -580,31 +588,50 @@ class TestPlaidLinkLifecycle(HttpCase):
     let handler;
     const bodyStyle = document.body.style.cssText;
     const previousFocus = document.activeElement;
+    const originalWarn = console.warn, warnings = [];
+    console.warn = (...args) => warnings.push(args);
     const container = document.createElement("section");
     const sibling = document.createElement("p");
     sibling.textContent = "Unrelated content";
     document.body.append(container, sibling);
     try {
-        for (const [type, key] of [
+        for (const [type, key, unsupportedOption = false] of [
             ["button", "button_component_configuration"],
             ["mini_card", "mini_card_component_configuration"],
             ["chip", "chip_component_configuration"],
+            [undefined, null],
+            ["fabricated-unsupported", null],
+            ["button", "button_component_configuration", true],
         ]) {
             const placeholder = document.createElement("p");
             placeholder.textContent = "Embedded Link placeholder";
             container.appendChild(placeholder);
-            handler = Plaid.createEmbedded({
+            const options = {
                 env: "sandbox", token: "link-sandbox-fabricated", onSuccess() {},
-                embeddedComponentConfiguration: {type},
-            }, container);
+            };
+            if (type !== undefined) options.embeddedComponentConfiguration = {type};
+            if (unsupportedOption) options.fixtureUnsupportedOption = true;
+            handler = Plaid.createEmbedded(options, container);
+            if (unsupportedOption) {
+                check(warnings.some(([message]) => message ===
+                    "Invalid Link parameter: fixtureUnsupportedOption " +
+                    "is not a valid Plaid.create() parameter"),
+                    "unknown embedded option reports its public warning");
+            }
             const embedded = container.querySelector(
                 "iframe[id^='plaid-embedded-link-iframe-']"
             );
             check(embedded !== null, "owned embedded iframe for " + type);
             const configured = (await take(embedded, "configure")).message.config;
             await take(embedded, "open");
-            check(JSON.stringify(configured.embeddedComponentConfiguration) ===
-                JSON.stringify({[key]: {}}), "component configuration for " + type);
+            check(configured.token === "link-sandbox-fabricated", "embedded token");
+            if (key) {
+                check(JSON.stringify(configured.embeddedComponentConfiguration) ===
+                    JSON.stringify({[key]: {}}), "component configuration for " + type);
+            } else {
+                check(!Object.hasOwn(configured, "embeddedComponentConfiguration"),
+                    "default and unsupported types omit component configuration");
+            }
             check(container.children.length === 1 && !placeholder.isConnected,
                 "embedding replaces only the supplied container's children");
             check(sibling.isConnected && sibling.textContent === "Unrelated content",
@@ -617,6 +644,7 @@ class TestPlaidLinkLifecycle(HttpCase):
         }
     } finally {
         if (handler) handler.destroy();
+        console.warn = originalWarn;
         window.removeEventListener("message", record);
         document.body.style.cssText = bodyStyle;
         container.remove();
@@ -724,6 +752,11 @@ class TestPlaidLinkLifecycle(HttpCase):
     let handler;
     const root = document.documentElement;
     const originalId = root.id, originalStyle = root.style.cssText;
+    const previousFocus = document.activeElement;
+    const focus = document.createElement("button");
+    focus.textContent = "Return after mobile Link";
+    document.body.appendChild(focus);
+    focus.focus();
     try {
         root.id = "plaid-fixture-original-root";
         const styles = [["321px", "important"], ["456px", ""], ["", ""]];
@@ -741,15 +774,37 @@ class TestPlaidLinkLifecycle(HttpCase):
                 && root.style.getPropertyPriority("height") === priority,
                 "destroy before open preserves document layout");
 
+            const exits = [];
+            let ready;
+            const initiallyReady = new Promise((resolve) => { ready = resolve; });
             handler = Plaid.create({
                 env: "sandbox", token: "link-sandbox-fabricated", onSuccess() {},
+                onExit: (...args) => exits.push(args), onLoad: () => ready(),
             }, {forceMobile: true});
             const frame = frameFor();
-            handler.open();
-            await take(frame, "open");
+            await take(frame, "configure");
+            await initiallyReady;
+            for (const institution of ["ins_109508", "ins_109509"]) {
+                handler.open(institution);
+                const config = (await take(frame, "configure")).message.config;
+                check(config.institution === institution
+                    && config.token === "link-sandbox-fabricated",
+                    "mobile reload preserves the institution and token");
+                check((await take(frame, "open")).message.institution === institution,
+                    "mobile open receives the selected institution");
+                check(frameFor() === frame && frame.style.display === "block",
+                    "mobile reload retains the owned visible iframe");
+            }
             await emit(frame, "resize", {height: "777px"});
             check(root.style.getPropertyValue("height") === "777px", "mobile resize");
+            handler.exit({force: true});
+            check((await take(frame, "exit")).message.config.force === true,
+                "public mobile exit sends its options to the owned peer");
             await emit(frame, "exit", {error: null, metadata: {status: "cancelled"}});
+            check(exits.length === 1 && exits[0][0] === null
+                && exits[0][1].status === "cancelled"
+                && document.activeElement === focus,
+                "public mobile exit restores focus and preserves the callback payload");
             check(root.id === "plaid-fixture-original-root",
                 "restore original root id");
             check(root.style.getPropertyValue("height") === height
@@ -768,6 +823,8 @@ class TestPlaidLinkLifecycle(HttpCase):
         if (handler) handler.destroy();
         root.id = originalId;
         root.style.cssText = originalStyle;
+        focus.remove();
+        if (previousFocus?.isConnected) previousFocus.focus();
         window.removeEventListener("message", record);
     }
     console.log("test successful");
