@@ -83,6 +83,14 @@ function frameFor(expectedOrigin = "https://cdn.plaid.com") {
 }
 """
 
+WEB3_COMPANIONS = (
+    "0.js",
+    "2.js",
+    "10.js",
+    "vendors~LazyLink~web3Bridge.js",
+    "web3Bridge.js",
+)
+
 
 PLAID_FORM_PAGE = (
     r"""<!doctype html><meta charset="utf-8"><title>Fabricated Plaid form</title>
@@ -111,6 +119,8 @@ class TestPlaidLinkLifecycle(HttpCase):
     def setUp(self):
         super().setUp()
         self._fixture_requests = SimpleQueue()
+        self._companion_responses = SimpleQueue()
+        self._companion_status = None
 
     def browser_js(self, *args, **kwargs):
         # Chrome can move a reloaded or navigated iframe to a child process.
@@ -122,6 +132,7 @@ class TestPlaidLinkLifecycle(HttpCase):
     def fetch_proxy(self, url):
         parsed = urlparse(url)
         content_type = "text/html; charset=utf-8"
+        response_code = 200
         if parsed.scheme == "https" and parsed.hostname in (
             "cdn.plaid.com",
             "secure.plaid.com",
@@ -130,11 +141,29 @@ class TestPlaidLinkLifecycle(HttpCase):
                 content = PLAID_PEER
             elif parsed.path == "/link/v2/stable/link-open.html":
                 content = "<!doctype html><title>Fabricated link-open receipt</title>"
+            elif (
+                parsed.hostname == "cdn.plaid.com"
+                and self._companion_status is not None
+                and parsed.path
+                in {f"/link/2.0.1951/{name}" for name in WEB3_COMPANIONS}
+            ):
+                response_code = self._companion_status
+                content_type = "application/javascript; charset=utf-8"
+                content = "" if response_code == 200 else "/* Missing fixture asset */"
+                self._companion_responses.put(
+                    (url, response_code, content_type, content)
+                )
             else:
                 return super().fetch_proxy(url)
         elif parsed.scheme == "https" and parsed.hostname == "plaid-form.invalid":
             if parsed.path == "/form.html":
                 content = PLAID_FORM_PAGE
+            elif parsed.path == "/web3.html":
+                content = (
+                    '<!doctype html><meta charset="utf-8">'
+                    "<title>Fabricated companion failure</title>"
+                    '<script src="/link-initialize.js"></script>'
+                )
             elif parsed.path == "/link-initialize.js":
                 sdk = (
                     Path(__file__).resolve().parents[1]
@@ -162,6 +191,7 @@ class TestPlaidLinkLifecycle(HttpCase):
             return super().fetch_proxy(url)
         self._fixture_requests.put(url)
         response = self.make_fetch_proxy_response(content)
+        response["responseCode"] = response_code
         response["responseHeaders"] = [
             {"name": "content-type", "value": content_type},
             {"name": "cache-control", "value": "no-store"},
@@ -170,6 +200,134 @@ class TestPlaidLinkLifecycle(HttpCase):
             {"name": "access-control-allow-methods", "value": "POST, OPTIONS"},
         ]
         return response
+
+    def test_fixture_delegates_requests_outside_its_owned_routes(self):
+        cases = (
+            (None, "https://cdn.plaid.com/link/2.0.1951/0.js"),
+            (404, "https://secure.plaid.com/link/2.0.1951/0.js"),
+            (404, "https://cdn.plaid.com/link/2.0.1951/unknown.js"),
+            (404, "https://plaid-form.invalid/unknown.html"),
+            (404, "http://sandbox.plaid.com/link/heartbeat"),
+            (404, "https://foreign.invalid/link/heartbeat"),
+            (404, "https://sandbox.plaid.com/link/unknown"),
+        )
+        for status, url in cases:
+            response = {"responseCode": 418, "body": "Framework fallback"}
+            expected = response.copy()
+            with (
+                self.subTest(status=status, url=url),
+                patch.object(self, "_companion_status", status),
+                patch.object(
+                    HttpCase, "fetch_proxy", autospec=True, return_value=response
+                ) as delegate,
+            ):
+                self.assertIs(self.fetch_proxy(url), response)
+                delegate.assert_called_once_with(self, url)
+                self.assertEqual(response, expected)
+                self.assertTrue(self._fixture_requests.empty())
+                self.assertTrue(self._companion_responses.empty())
+
+    def _assert_web3_companion_failure(self, status, failure_type):
+        self._companion_status = status
+        self.browser_js(
+            "https://plaid-form.invalid/web3.html",
+            BROWSER_HARNESS
+            + r"""
+(async () => {
+    const names = ["0.js", "2.js", "10.js",
+        "vendors~LazyLink~web3Bridge.js", "web3Bridge.js"];
+    const urls = names.map(name => "https://cdn.plaid.com/link/2.0.1951/" + name);
+    const scriptEvents = [], failures = [], unexpected = [];
+    const successes = [], exits = [];
+    function resource(event) {
+        if (event.target instanceof HTMLScriptElement
+            && urls.includes(event.target.src)) {
+            scriptEvents.push({url: event.target.src, type: event.type});
+        }
+    }
+    function rejection(event) {
+        const error = event.reason;
+        if (error?.name === "ChunkLoadError"
+            && error.type === "__FAILURE_TYPE__" && urls.includes(error.request)) {
+            failures.push(error);
+            event.preventDefault();
+        } else {
+            unexpected.push(error);
+        }
+    }
+    document.addEventListener("load", resource, true);
+    document.addEventListener("error", resource, true);
+    window.addEventListener("unhandledrejection", rejection);
+    let handler, frame;
+    try {
+        handler = Plaid.create({
+            env: "sandbox", token: "link-sandbox-fabricated",
+            onSuccess: (...args) => successes.push(args),
+            onExit: (...args) => exits.push(args),
+        }, {web3ValidChains: ["eip155:1"]});
+        handler.open();
+        frame = frameFor();
+        const configured = (await take(frame, "configure")).message.config;
+        await take(frame, "open");
+        check(configured.token === "link-sandbox-fabricated", "configured token");
+        check(JSON.stringify(configured.web3ValidChains) === '["eip155:1"]',
+            "configured Web3 chains");
+        await emit(frame, "web3-message", {message: "START_BRIDGE"});
+        const deadline = performance.now() + 5000;
+        while ((scriptEvents.length < 5 || failures.length < 1)
+            && performance.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        check(scriptEvents.length === 5, "all five real companion script events");
+        check(new Set(scriptEvents.map(event => event.url)).size === 5,
+            "one browser event per companion URL");
+        const expectedEvent = "__FAILURE_TYPE__" === "error" ? "error" : "load";
+        check(scriptEvents.every(event => event.type === expectedEvent),
+            "actual browser resource failure kind");
+        check(failures.length === 1 && unexpected.length === 0,
+            "only the expected chunk rejection is suppressed");
+        check(failures[0].message.includes(failures[0].request),
+            "chunk error retains the actual request URL");
+        check(successes.length === 0 && exits.length === 0,
+            "failed companion loading produces no successful provider result or exit");
+    } finally {
+        handler?.destroy();
+        document.removeEventListener("load", resource, true);
+        document.removeEventListener("error", resource, true);
+        window.removeEventListener("unhandledrejection", rejection);
+        window.removeEventListener("message", record);
+        for (const script of document.querySelectorAll("script[src]")) {
+            if (urls.includes(script.src)) script.remove();
+        }
+    }
+    check(frame && !frame.isConnected, "public destroy removes the owned Link iframe");
+    console.log("test successful");
+})().catch(error => console.error(error.stack));
+""".replace("__FAILURE_TYPE__", failure_type),
+            ready="typeof Plaid !== 'undefined' && typeof Plaid.create === 'function'",
+            login="admin",
+            timeout=90,
+        )
+        responses = []
+        while not self._companion_responses.empty():
+            responses.append(self._companion_responses.get())
+        self.assertEqual(
+            sorted(urlparse(url).path for url, *_rest in responses),
+            sorted(f"/link/2.0.1951/{name}" for name in WEB3_COMPANIONS),
+        )
+        for url, code, content_type, body in responses:
+            self.assertEqual(urlparse(url).hostname, "cdn.plaid.com")
+            self.assertEqual(code, status)
+            self.assertEqual(content_type, "application/javascript; charset=utf-8")
+            self.assertEqual(
+                body, "" if status == 200 else "/* Missing fixture asset */"
+            )
+
+    def test_web3_companion_http_failures_reject_the_real_sdk_loader(self):
+        self._assert_web3_companion_failure(404, "error")
+
+    def test_web3_companions_without_registration_reject_the_real_sdk_loader(self):
+        self._assert_web3_companion_failure(200, "missing")
 
     def test_sync_button_links_the_selected_account(self):
         bank = self.env["res.bank"].create(
