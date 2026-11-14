@@ -2869,18 +2869,23 @@ class TestPlaidLinkLifecycle(HttpCase):
     };
     const options = {
         env: "sandbox", token: "link-sandbox-fabricated",
-        countryCodes: ["US", "CA"], product: ["transactions"],
         onSuccess: (...args) => successes.push(args),
         onExit: (...args) => exits.push(args),
         [visibleKey]: sentinel,
     };
+    if (!embeddedMode) {
+        options.countryCodes = ["US", "CA"];
+        options.product = ["transactions"];
+    }
     Object.defineProperty(options, hiddenKey, {get: hiddenGetter});
     function checkTransport(ownedFrame, configured) {
         check(configured.token === "link-sandbox-fabricated",
             "ordinary token reaches the peer");
-        check(JSON.stringify(configured.countryCodes) === '["US","CA"]'
-            && JSON.stringify(configured.product) === '["transactions"]',
-            "ordinary option arrays reach the peer");
+        if (!embeddedMode) {
+            check(JSON.stringify(configured.countryCodes) === '["US","CA"]'
+                && JSON.stringify(configured.product) === '["transactions"]',
+                "ordinary option arrays reach the peer");
+        }
         check(Object.getOwnPropertySymbols(configured).length === 0
             && !JSON.stringify(configured).includes(marker)
             && !decodeURIComponent(ownedFrame.src).includes(marker),
@@ -2899,7 +2904,17 @@ class TestPlaidLinkLifecycle(HttpCase):
             handler.open();
         }
         check(frame !== null, "public API creates its owned iframe");
-        checkTransport(frame, (await take(frame, "configure")).message.config);
+        const initialConfig = (await take(frame, "configure")).message.config;
+        checkTransport(frame, initialConfig);
+        if (embeddedMode) {
+            check(initialConfig.isEmbedded === true
+                && initialConfig.isEmbeddedLink === true
+                && initialConfig.isLinkInitialize === true,
+                "supported embedded options configure an embedded Link");
+            check(JSON.stringify(initialConfig.embeddedComponentConfiguration) ===
+                '{"institution_select_component_configuration":{}}',
+                "supported component type reaches the peer");
+        }
         await take(frame, "open");
         check(successes.length === 0 && exits.length === 0,
             "configuration does not complete or cancel Link");
