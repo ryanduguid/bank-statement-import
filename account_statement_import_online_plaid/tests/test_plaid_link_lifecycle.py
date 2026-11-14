@@ -155,13 +155,19 @@ class TestPlaidLinkLifecycle(HttpCase):
                 )
             else:
                 return super().fetch_proxy(url)
-        elif parsed.scheme == "https" and parsed.hostname == "plaid-form.invalid":
+        elif parsed.hostname == "plaid-form.invalid" and (
+            parsed.scheme == "https"
+            or (
+                parsed.scheme == "http"
+                and parsed.path in {"/uuid-fallback.html", "/link-initialize.js"}
+            )
+        ):
             if parsed.path == "/form.html":
                 content = PLAID_FORM_PAGE
-            elif parsed.path == "/web3.html":
+            elif parsed.path in ("/web3.html", "/uuid-fallback.html"):
                 content = (
                     '<!doctype html><meta charset="utf-8">'
-                    "<title>Fabricated companion failure</title>"
+                    "<title>Fabricated Plaid lifecycle</title>"
                     '<script src="/link-initialize.js"></script>'
                 )
             elif parsed.path == "/link-initialize.js":
@@ -207,6 +213,7 @@ class TestPlaidLinkLifecycle(HttpCase):
             (404, "https://secure.plaid.com/link/2.0.1951/0.js"),
             (404, "https://cdn.plaid.com/link/2.0.1951/unknown.js"),
             (404, "https://plaid-form.invalid/unknown.html"),
+            (404, "http://plaid-form.invalid/form.html"),
             (404, "http://sandbox.plaid.com/link/heartbeat"),
             (404, "https://foreign.invalid/link/heartbeat"),
             (404, "https://sandbox.plaid.com/link/unknown"),
@@ -226,6 +233,79 @@ class TestPlaidLinkLifecycle(HttpCase):
                 self.assertEqual(response, expected)
                 self.assertTrue(self._fixture_requests.empty())
                 self.assertTrue(self._companion_responses.empty())
+
+    def test_insecure_page_generates_uuid_fallback_across_reopen(self):
+        self.browser_js(
+            "http://plaid-form.invalid/uuid-fallback.html",
+            BROWSER_HARNESS
+            + r"""
+(async () => {
+    let handler;
+    const bodyStyle = document.body.style.cssText;
+    const successes = [], exits = [];
+    const uuid =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    try {
+        check(location.origin === "http://plaid-form.invalid"
+            && !isSecureContext, "fixture uses a real insecure origin");
+        check(!("randomUUID" in crypto)
+            && typeof crypto.getRandomValues === "function",
+            "native browser crypto requires the SDK UUID fallback");
+        const randomBytes = new Uint8Array(16);
+        check(crypto.getRandomValues(randomBytes) === randomBytes,
+            "browser retains its standard random-byte API");
+        handler = Plaid.create({
+            env: "sandbox", token: "link-sandbox-fabricated",
+            onSuccess: (...args) => successes.push(args),
+            onExit: (...args) => exits.push(args),
+        }, {forceDesktop: true});
+        const frame = frameFor();
+        const configured = (await take(frame, "configure")).message.config;
+        const frameUrl = new URL(frame.src);
+        const initialId = configured.linkOpenId;
+        check(uuid.test(initialId), "initial configuration receives a UUIDv4");
+        check(frameUrl.searchParams.get("linkOpenId") === initialId
+            && frameUrl.searchParams.get("uniqueId") === configured.uniqueId,
+            "iframe URL carries the public configuration identifiers");
+        check(configured.origin === location.origin
+            && frameUrl.searchParams.get("origin") === location.origin,
+            "configuration and iframe URL preserve the insecure parent origin");
+        handler.open();
+        check((await take(frame, "open")).message.linkOpenId === initialId,
+            "initial open carries the configured UUID");
+        check(frame.style.display === "block" && exits.length === 0
+            && successes.length === 0, "opening does not complete the link");
+        handler.exit({force: true});
+        check((await take(frame, "exit")).message.config.force === true,
+            "public force exit reaches the owned peer");
+        await emit(frame, "exit", {error: null, metadata: {status: "cancelled"}});
+        check(frame.style.display === "none" && exits.length === 1
+            && exits[0][0] === null && exits[0][1].status === "cancelled",
+            "peer cancellation hides Link and preserves the callback payload");
+        handler.open();
+        const reopened = (await take(frame, "open")).message;
+        check(uuid.test(reopened.linkOpenId) && reopened.linkOpenId !== initialId,
+            "reopening after cancellation generates a fresh UUIDv4");
+        check(frameFor() === frame && frame.style.display === "block"
+            && new URL(frame.src).searchParams.get("linkOpenId") === initialId,
+            "reopening reuses the configured peer without rewriting its URL");
+        handler.destroy();
+        handler = null;
+        check(!frame.isConnected && successes.length === 0 && exits.length === 1,
+            "destroy removes the peer without a fabricated success or extra exit");
+    } finally {
+        if (handler) handler.destroy();
+        window.removeEventListener("message", record);
+        document.body.style.cssText = bodyStyle;
+    }
+    console.log("test successful");
+})().catch((error) => console.error(error.stack));
+""",
+            ready="typeof Plaid !== 'undefined' && typeof Plaid.create === 'function'",
+            login="admin",
+            timeout=90,
+        )
+        self.assertFalse(self._fixture_requests.empty())
 
     def _assert_web3_companion_failure(self, status, failure_type):
         self._companion_status = status
