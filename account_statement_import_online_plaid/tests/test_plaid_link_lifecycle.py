@@ -2971,6 +2971,96 @@ class TestPlaidLinkLifecycle(HttpCase):
         )
         self.assertFalse(self._fixture_requests.empty())
 
+    def test_invalid_query_value_preserves_ui_and_allows_fresh_link(self):
+        self.browser_js(
+            "/web",
+            BROWSER_HARNESS
+            + r"""
+(async () => {
+    let handler;
+    const bodyStyle = document.body.style.cssText;
+    const previousFocus = document.activeElement;
+    const focus = document.createElement("button");
+    document.body.appendChild(focus);
+    focus.focus();
+    const successes = [], exits = [];
+    const invalid = Symbol("invalid-country"), countries = ["US", invalid];
+    const callbacks = {
+        onSuccess: (...args) => successes.push(args),
+        onExit: (...args) => exits.push(args),
+    };
+    try {
+        check(document.querySelector("iframe[id^='plaid-link-iframe-']") === null,
+            "the fresh page has no Link iframe");
+        let failure;
+        try {
+            handler = Plaid.create({
+                env: "sandbox", token: "link-sandbox-fabricated",
+                countryCodes: countries, ...callbacks,
+            }, {forceDesktop: true});
+        } catch (error) {
+            failure = error;
+        }
+        check(failure instanceof TypeError,
+            "an unsupported Symbol query value is refused synchronously");
+        check(document.querySelector("iframe[id^='plaid-link-iframe-']") === null
+            && document.body.style.cssText === bodyStyle
+            && document.activeElement === focus,
+            "refusal preserves the body, focus and absence of an iframe");
+        check(successes.length === 0 && exits.length === 0
+            && countries.length === 2 && countries[0] === "US"
+            && countries[1] === invalid,
+            "refusal preserves caller input without completing or cancelling Link");
+        handler = Plaid.create({
+            env: "sandbox", token: "link-sandbox-fabricated",
+            countryCodes: ["US", "CA"], ...callbacks,
+        }, {forceDesktop: true});
+        const frame = frameFor();
+        check(JSON.stringify(new URL(frame.src).searchParams.getAll("countryCodes"))
+            === '["US","CA"]', "a fresh Link preserves repeated URL parameters");
+        const configured = (await take(frame, "configure")).message.config;
+        check(JSON.stringify(configured.countryCodes) === '["US","CA"]'
+            && configured.token === "link-sandbox-fabricated",
+            "a fresh Link configures the valid countries and token");
+        handler.open();
+        await take(frame, "open");
+        handler.exit({force: true});
+        await take(frame, "exit");
+        await emit(frame, "exit", {error: null, metadata: {status: "cancelled"}});
+        check(JSON.stringify(exits) === '[[null,{"status":"cancelled"}]]'
+            && successes.length === 0 && frame.style.display === "none"
+            && document.activeElement === focus,
+            "valid cancellation retains its payload and restores focus");
+        handler.open();
+        await take(frame, "open");
+        await emit(frame, "connected", {metadata: {
+            public_token: "public-sandbox-fabricated",
+            accounts: [{id: "fabricated-query-recovery-account"}],
+        }});
+        check(successes.length === 1 && successes[0][0] === "public-sandbox-fabricated"
+            && successes[0][1].accounts[0].id === "fabricated-query-recovery-account"
+            && exits.length === 1 && frame.style.display === "none",
+            "the fresh Link reopens and completes with the expected account");
+        handler.destroy();
+        handler = null;
+        check(!frame.isConnected && successes.length === 1 && exits.length === 1,
+            "destroy removes the valid frame without adding callbacks");
+    } finally {
+        if (handler) handler.destroy();
+        window.removeEventListener("message", record);
+        document.body.style.cssText = bodyStyle;
+        focus.remove();
+        if (previousFocus?.isConnected) previousFocus.focus();
+    }
+    console.log("test successful");
+})().catch((error) => console.error(error.stack));
+""",
+            ready="typeof Plaid !== 'undefined' && typeof Plaid.create === 'function'",
+            login="admin",
+            timeout=90,
+        )
+        self.assertFalse(self._fixture_requests.empty())
+
     def test_link_options_keep_symbol_metadata_out_of_transport(self):
         self._assert_symbol_option_metadata(embedded=False)
 
