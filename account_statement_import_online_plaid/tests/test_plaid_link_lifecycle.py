@@ -693,6 +693,7 @@ class TestPlaidLinkLifecycle(HttpCase):
         const map = new WeakMap(), other = new WeakMap();
         const key = {label: "first"}, distinct = {label: "first"};
         Object.defineProperty(key, "sentinel", {value: 7});
+        const originalNames = Object.getOwnPropertyNames(key);
         check(map.get(key) === undefined && map.has(key) === false
             && map.delete(key) === false, "a new object key is absent");
         check(map.set(key, "initial") === map
@@ -712,11 +713,20 @@ class TestPlaidLinkLifecycle(HttpCase):
         check(map.get(callable) === "function" && map.get(array) === "array",
             "functions and arrays are valid identity keys");
         check(Object.keys(key).join(",") === "label"
-            && Object.getOwnPropertyNames(key).sort().join(",") === "label,sentinel"
             && JSON.stringify(key) === '{"label":"first"}'
             && key.sentinel === 7
             && Object.getOwnPropertyDescriptor(key, "sentinel").enumerable === false,
             "fallback storage preserves visible enumerable and non-enumerable fields");
+        const storedNames = Object.getOwnPropertyNames(key);
+        const addedNames = storedNames.filter((name) => !originalNames.includes(name));
+        check(originalNames.every((name) => storedNames.includes(name))
+            && addedNames.length === 1,
+            "reflection retains original names and exposes one SDK metadata name");
+        const metadataDescriptor = Object.getOwnPropertyDescriptor(key, addedNames[0]);
+        check(metadataDescriptor.enumerable === false
+            && metadataDescriptor.configurable === false
+            && metadataDescriptor.writable === false,
+            "SDK metadata remains non-enumerable and cannot be redefined");
         const frozen = Object.freeze({label: "frozen"});
         const closed = Object.preventExtensions({label: "closed"});
         const later = {label: "later"};
