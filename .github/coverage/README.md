@@ -6,6 +6,8 @@ Python is required by Odoo's import and browser hooks and the coverage.py report
 
 CI runs the collector regression suites, instruments assets before addon installation, captures live browser/context receipts during oca_run_tests and merges them before the authenticated Codecov upload. Failure to collect or validate a receipt fails the job. Python and JavaScript collector tests also produce coverage for the maintained collector code.
 
+CI fetches the 5 matching Plaid Web3 companions from the versioned public CDN and verifies their SHA-256 hashes. They live in the runner's temporary directory as test dependencies, exposed through the PLAID_TEST_COMPANION_DIR environment setting. The shipped, modified SDK remains fully measured.
+
 The browser uses each addon's ordinary test fixtures and request proxy. The collector neither calls a provider nor supplies credentials. Full source checks and current asset inventory are mandatory.
 
 The Python report retains every tracked addon source, including tests and modules that were never imported. Only literal dictionary addon manifests are metadata; uncollected Python code and external source links fail the report. Collector code is measured separately by its regression suites.

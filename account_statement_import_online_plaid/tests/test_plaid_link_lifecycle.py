@@ -1,6 +1,9 @@
 # Copyright 2026 Ryan Duguid
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 
+import hashlib
+import json
+import os
 from pathlib import Path
 from queue import SimpleQueue
 from types import SimpleNamespace
@@ -34,7 +37,8 @@ addEventListener("message", (event) => {
     } else if (message.action === "plaid_link::configure") {
         receipt("configure", {message});
         send("ready");
-    } else if (["plaid_link::open", "plaid_link::submit", "plaid_link::exit"]
+    } else if (["plaid_link::open", "plaid_link::submit", "plaid_link::exit",
+        "plaid_link::web3-message"]
         .includes(message.action)) {
         receipt(message.action.split("::")[1], {message});
     }
@@ -121,6 +125,7 @@ class TestPlaidLinkLifecycle(HttpCase):
         self._fixture_requests = SimpleQueue()
         self._companion_responses = SimpleQueue()
         self._companion_status = None
+        self._genuine_companions = {}
 
     def browser_js(self, *args, **kwargs):
         # Chrome can move a reloaded or navigated iframe to a child process.
@@ -143,13 +148,20 @@ class TestPlaidLinkLifecycle(HttpCase):
                 content = "<!doctype html><title>Fabricated link-open receipt</title>"
             elif (
                 parsed.hostname == "cdn.plaid.com"
-                and self._companion_status is not None
+                and (self._companion_status is not None or self._genuine_companions)
                 and parsed.path
                 in {f"/link/2.0.1951/{name}" for name in WEB3_COMPANIONS}
             ):
-                response_code = self._companion_status
+                response_code = (
+                    200 if self._companion_status is None else self._companion_status
+                )
                 content_type = "application/javascript; charset=utf-8"
-                content = "" if response_code == 200 else "/* Missing fixture asset */"
+                if self._genuine_companions:
+                    content = self._genuine_companions[Path(parsed.path).name]
+                else:
+                    content = (
+                        "" if response_code == 200 else "/* Missing fixture asset */"
+                    )
                 self._companion_responses.put(
                     (url, response_code, content_type, content)
                 )
@@ -408,6 +420,107 @@ class TestPlaidLinkLifecycle(HttpCase):
 
     def test_web3_companions_without_registration_reject_the_real_sdk_loader(self):
         self._assert_web3_companion_failure(200, "missing")
+
+    def test_real_web3_companions_report_wallet_plugin_discovery(self):
+        manifest = json.loads(
+            (Path(__file__).parent / "fixtures/plaid_web3_companions.json").read_text()
+        )
+        cache = Path(os.environ["PLAID_TEST_COMPANION_DIR"])
+        self.assertEqual(
+            [asset["name"] for asset in manifest["assets"]], list(WEB3_COMPANIONS)
+        )
+        for asset in manifest["assets"]:
+            content = (cache / asset["name"]).read_bytes()
+            self.assertEqual(len(content), asset["bytes"])
+            self.assertEqual(hashlib.sha256(content).hexdigest(), asset["sha256"])
+            self._genuine_companions[asset["name"]] = content.decode("utf-8")
+        self.browser_js(
+            "https://plaid-form.invalid/web3.html",
+            BROWSER_HARNESS
+            + r"""
+(async () => {
+    const names = ["0.js", "2.js", "10.js",
+        "vendors~LazyLink~web3Bridge.js", "web3Bridge.js"];
+    const urls = names.map(name => "https://cdn.plaid.com/link/2.0.1951/" + name);
+    const scripts = [], failures = [], successes = [], exits = [];
+    const bodyStyle = document.body.style.cssText;
+    function resource(event) {
+        if (event.target instanceof HTMLScriptElement
+            && urls.includes(event.target.src)) {
+            scripts.push({url: event.target.src, type: event.type});
+        }
+    }
+    function rejection(event) {
+        failures.push(event.reason);
+    }
+    function pluginReceipt(receipt) {
+        const message = receipt.message;
+        check(message.action === "plaid_link::web3-message"
+            && message.message === "RESPONSE_PLUGIN_DATA",
+            "genuine bridge responds through the configured peer");
+        check(JSON.stringify(message.metadata) === '{"installedWalletIds":[]}',
+            "clean browser reports no installed wallet plugins");
+    }
+    document.addEventListener("load", resource, true);
+    document.addEventListener("error", resource, true);
+    window.addEventListener("unhandledrejection", rejection);
+    let handler, frame;
+    try {
+        check(!window.ethereum, "clean browser has no injected Ethereum provider");
+        handler = Plaid.create({
+            env: "sandbox", token: "link-sandbox-fabricated",
+            onSuccess: (...args) => successes.push(args),
+            onExit: (...args) => exits.push(args),
+        }, {forceDesktop: true, web3ValidChains: ["eip155:1"]});
+        handler.open();
+        frame = frameFor();
+        await take(frame, "configure");
+        await take(frame, "open");
+        await emit(frame, "web3-message", {message: "START_BRIDGE"});
+        await emit(frame, "web3-message", {message: "REQUEST_PLUGIN_DATA"});
+        pluginReceipt(await take(frame, "web3-message"));
+        check(scripts.length === 5
+            && new Set(scripts.map(event => event.url)).size === 5
+            && scripts.every(event => event.type === "load"),
+            "all five genuine companions load and register once");
+        await emit(frame, "web3-message", {message: "START_BRIDGE"});
+        await emit(frame, "web3-message", {message: "REQUEST_PLUGIN_DATA"});
+        pluginReceipt(await take(frame, "web3-message"));
+        check(scripts.length === 5 && failures.length === 0,
+            "repeated start reuses successful initialisation without rejection");
+        check(successes.length === 0 && exits.length === 0,
+            "plugin discovery does not complete or cancel Link");
+    } finally {
+        handler?.destroy();
+        document.removeEventListener("load", resource, true);
+        document.removeEventListener("error", resource, true);
+        window.removeEventListener("unhandledrejection", rejection);
+        window.removeEventListener("message", record);
+        document.body.style.cssText = bodyStyle;
+        for (const script of document.querySelectorAll("script[src]")) {
+            if (urls.includes(script.src)) script.remove();
+        }
+    }
+    check(frame && !frame.isConnected, "destroy removes the owned Link iframe");
+    console.log("test successful");
+})().catch(error => console.error(error.stack));
+""",
+            ready="typeof Plaid !== 'undefined' && typeof Plaid.create === 'function'",
+            login="admin",
+            timeout=90,
+        )
+        responses = []
+        while not self._companion_responses.empty():
+            responses.append(self._companion_responses.get())
+        self.assertEqual(
+            sorted(urlparse(url).path for url, *_rest in responses),
+            sorted(f"/link/2.0.1951/{name}" for name in WEB3_COMPANIONS),
+        )
+        for url, code, content_type, content in responses:
+            name = Path(urlparse(url).path).name
+            self.assertEqual(code, 200)
+            self.assertEqual(content_type, "application/javascript; charset=utf-8")
+            self.assertEqual(content, self._genuine_companions[name])
 
     def test_sync_button_links_the_selected_account(self):
         bank = self.env["res.bank"].create(

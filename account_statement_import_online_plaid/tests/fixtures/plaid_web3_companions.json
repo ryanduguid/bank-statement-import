@@ -1,0 +1,30 @@
+{
+  "base_url": "https://cdn.plaid.com/link/2.0.1951/",
+  "assets": [
+    {
+      "name": "0.js",
+      "bytes": 16646,
+      "sha256": "a1757788c8206347b18ee892d1f327ac06c38cf4a6b33900f37ca381ba0417a9"
+    },
+    {
+      "name": "2.js",
+      "bytes": 1011096,
+      "sha256": "40bb5e1778ad593616b986861d5aedb85b874be9edb83da2cb09742de0162170"
+    },
+    {
+      "name": "10.js",
+      "bytes": 25056,
+      "sha256": "f4029b1eb01cd7041c69ed8a7b986d8d8a3409d1f58636c1ca6d225a7ecadc9f"
+    },
+    {
+      "name": "vendors~LazyLink~web3Bridge.js",
+      "bytes": 12923,
+      "sha256": "ed928af3cb7e87a4a26125726471cb5e6840e1cf9ef7ffd362a62e62bff169f1"
+    },
+    {
+      "name": "web3Bridge.js",
+      "bytes": 148905,
+      "sha256": "82309b89d319cade2409989f3a7c2fa8f7f8db4c310a4ee5c7ba708411cb2a33"
+    }
+  ]
+}

@@ -65,6 +65,34 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "26.13.1"
+      - name: Prepare pinned Plaid Web3 test dependencies
+        shell: bash
+        run: |
+          node - <<'JS'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const { createHash } = require('node:crypto');
+          const manifest = JSON.parse(fs.readFileSync(
+            'account_statement_import_online_plaid/tests/fixtures/plaid_web3_companions.json', 'utf8'));
+          const names = ['0.js', '2.js', '10.js', 'vendors~LazyLink~web3Bridge.js', 'web3Bridge.js'];
+          assert.equal(manifest.base_url, 'https://cdn.plaid.com/link/2.0.1951/');
+          assert.deepEqual(manifest.assets.map(asset => asset.name), names);
+          const directory = path.join(process.env.RUNNER_TEMP, 'plaid-web3-companions');
+          fs.mkdirSync(directory, { recursive: true });
+          (async () => {
+            for (const asset of manifest.assets) {
+              const response = await fetch(manifest.base_url + asset.name,
+                { redirect: 'error', signal: AbortSignal.timeout(30000) });
+              assert(response.ok, 'Companion download failed: ' + asset.name);
+              const bytes = Buffer.from(await response.arrayBuffer());
+              assert.equal(bytes.length, asset.bytes);
+              assert.equal(createHash('sha256').update(bytes).digest('hex'), asset.sha256);
+              fs.writeFileSync(path.join(directory, asset.name), bytes);
+            }
+            fs.appendFileSync(process.env.GITHUB_ENV, 'PLAID_TEST_COMPANION_DIR=' + directory + '\n');
+          })().catch(error => { console.error(error); process.exitCode = 1; });
+          JS
       - name: Check the browser coverage collector
         shell: bash
         env:
