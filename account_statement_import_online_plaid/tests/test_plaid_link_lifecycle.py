@@ -2833,6 +2833,147 @@ class TestPlaidLinkLifecycle(HttpCase):
         )
         self.assertFalse(self._fixture_requests.empty())
 
+    def test_link_options_keep_symbol_metadata_out_of_transport(self):
+        self._assert_symbol_option_metadata(embedded=False)
+
+    def test_embedded_options_keep_symbol_metadata_out_of_handoff(self):
+        self._assert_symbol_option_metadata(embedded=True)
+
+    def _assert_symbol_option_metadata(self, embedded):
+        self.browser_js(
+            "/web",
+            BROWSER_HARNESS
+            + "const embeddedMode = "
+            + json.dumps(embedded)
+            + ";\n"
+            + r"""
+(async () => {
+    let handler, frame, modal;
+    let serializations = 0, hiddenReads = 0;
+    const bodyStyle = document.body.style.cssText;
+    const previousFocus = document.activeElement;
+    const focus = document.createElement("button");
+    const container = document.createElement("section");
+    document.body.append(focus, container);
+    focus.focus();
+    const successes = [], exits = [];
+    const marker = "fabricated-private-symbol-sentinel";
+    const visibleKey = Symbol(marker), hiddenKey = Symbol("hidden-metadata");
+    const sentinel = {fixture: marker, toJSON() {
+        serializations++;
+        throw new Error("symbol metadata must not be serialized");
+    }};
+    const hiddenGetter = () => {
+        hiddenReads++;
+        throw new Error("non-enumerable symbol metadata must not be read");
+    };
+    const options = {
+        env: "sandbox", token: "link-sandbox-fabricated",
+        onSuccess: (...args) => successes.push(args),
+        onExit: (...args) => exits.push(args),
+        [visibleKey]: sentinel,
+    };
+    if (!embeddedMode) {
+        options.countryCodes = ["US", "CA"];
+        options.product = ["transactions"];
+    }
+    Object.defineProperty(options, hiddenKey, {get: hiddenGetter});
+    function checkTransport(ownedFrame, configured) {
+        check(configured.token === "link-sandbox-fabricated",
+            "ordinary token reaches the peer");
+        if (!embeddedMode) {
+            check(JSON.stringify(configured.countryCodes) === '["US","CA"]'
+                && JSON.stringify(configured.product) === '["transactions"]',
+                "ordinary option arrays reach the peer");
+        }
+        check(Object.getOwnPropertySymbols(configured).length === 0
+            && !JSON.stringify(configured).includes(marker)
+            && !decodeURIComponent(ownedFrame.src).includes(marker),
+            "private symbol metadata is absent from peer configuration and URL");
+    }
+    try {
+        if (embeddedMode) {
+            options.embeddedComponentConfiguration = {type: "institution_select"};
+            handler = Plaid.createEmbedded(options, container);
+            frame = container.querySelector(
+                "iframe[id^='plaid-embedded-link-iframe-']"
+            );
+        } else {
+            handler = Plaid.create(options);
+            frame = frameFor();
+            handler.open();
+        }
+        check(frame !== null, "public API creates its owned iframe");
+        const initialConfig = (await take(frame, "configure")).message.config;
+        checkTransport(frame, initialConfig);
+        if (embeddedMode) {
+            check(initialConfig.isEmbedded === true
+                && initialConfig.isEmbeddedLink === true
+                && initialConfig.isLinkInitialize === true,
+                "supported embedded options configure an embedded Link");
+            check(JSON.stringify(initialConfig.embeddedComponentConfiguration) ===
+                '{"institution_select_component_configuration":{}}',
+                "supported component type reaches the peer");
+        }
+        await take(frame, "open");
+        check(successes.length === 0 && exits.length === 0,
+            "configuration does not complete or cancel Link");
+        if (embeddedMode) {
+            await emit(frame, "internal-event", {event: {start_link: {
+                link_token_configuration: {
+                    institution_id: "ins_109508",
+                    embedded_workflow_session_id: "fabricated-symbol-session",
+                    embedded_open_link_configuration: {fixture: "symbol-handoff"},
+                },
+            }}});
+            modal = frameFor();
+            const configured = (await take(modal, "configure")).message.config;
+            checkTransport(modal, configured);
+            check(configured.embeddedWorkflowSessionId === "fabricated-symbol-session",
+                "embedded session survives handoff");
+            check((await take(modal, "open")).message.institution === "ins_109508",
+                "handoff opens the selected institution");
+        } else {
+            handler.exit({force: true});
+            check((await take(frame, "exit")).message.config.force === true,
+                "public cancellation reaches the peer");
+            await emit(frame, "exit", {error: null, metadata: {status: "cancelled"}});
+            check(JSON.stringify(exits) === '[[null,{"status":"cancelled"}]]',
+                "ordinary cancellation callback is preserved");
+        }
+        handler.destroy();
+        handler = null;
+        check(!frame.isConnected && (!modal || !modal.isConnected),
+            "destroy removes all owned frames");
+        check(successes.length === 0 && exits.length === (embeddedMode ? 0 : 1),
+            "destroy does not add callbacks");
+        check(serializations === 0 && hiddenReads === 0,
+            "symbol serialization and non-enumerable getters never run");
+        check(options[visibleKey] === sentinel
+            && Object.getOwnPropertyDescriptor(options, visibleKey).enumerable
+            && Object.getOwnPropertyDescriptor(options, hiddenKey).get === hiddenGetter
+            && !Object.getOwnPropertyDescriptor(options, hiddenKey).enumerable,
+            "caller-owned symbol values and descriptors are preserved");
+    } finally {
+        if (handler) handler.destroy();
+        window.removeEventListener("message", record);
+        document.body.style.cssText = bodyStyle;
+        container.remove();
+        focus.remove();
+        if (previousFocus?.isConnected) previousFocus.focus();
+    }
+    console.log("test successful");
+})().catch((error) => console.error(error.stack));
+""",
+            ready=(
+                "typeof Plaid !== 'undefined' && typeof Plaid.create === 'function'"
+                " && typeof Plaid.createEmbedded === 'function'"
+            ),
+            login="admin",
+            timeout=90,
+        )
+        self.assertFalse(self._fixture_requests.empty())
+
     def test_embedded_link_handoff_replaces_and_destroys_owned_modals(self):
         self.browser_js(
             "/web",
