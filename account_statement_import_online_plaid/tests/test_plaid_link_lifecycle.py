@@ -136,6 +136,17 @@ delete window.URLSearchParams;
 plaidSingleSdkFallback.before = typeof URLSearchParams;
 </script>"""
 
+ASSIGN_FALLBACK_BOOTSTRAP = r"""<script>
+window.plaidSingleSdkFallback = {
+    owner: Object, name: "assign", native: Object.assign,
+    concat: Array.prototype.concat, arrayFrom: Array.from,
+    indexOf: Array.prototype.indexOf, symbol: Symbol,
+    keys: Object.keys, symbols: Object.getOwnPropertySymbols,
+};
+delete Object.assign;
+plaidSingleSdkFallback.before = typeof Object.assign;
+</script>"""
+
 WEAKMAP_FALLBACK_BOOTSTRAP = r"""<script>
 window.plaidSingleSdkFallback = {
     owner: window, name: "WeakMap", native: WeakMap,
@@ -152,6 +163,7 @@ SDK_FALLBACK_PAGES = {
     "/indexof-fallback.html": INDEXOF_FALLBACK_BOOTSTRAP,
     "/arrayfrom-fallback.html": ARRAY_FROM_FALLBACK_BOOTSTRAP,
     "/urlsearchparams-fallback.html": URL_SEARCH_PARAMS_FALLBACK_BOOTSTRAP,
+    "/assign-fallback.html": ASSIGN_FALLBACK_BOOTSTRAP,
     "/weakmap-fallback.html": WEAKMAP_FALLBACK_BOOTSTRAP,
 }
 
@@ -677,6 +689,97 @@ class TestPlaidLinkLifecycle(HttpCase):
             check(observed === original && steps === 1 && closes === 1,
                 "mapper failure closes once and retains the original error");
         }
+""",
+        )
+
+    def test_real_sdk_assign_fallback_copies_own_enumerable_values(self):
+        self._assert_single_sdk_fallback(
+            "/assign-fallback.html",
+            r"""
+        check(Array.from === fallback.arrayFrom
+            && Array.prototype.indexOf === fallback.indexOf
+            && Symbol === fallback.symbol && Object.keys === fallback.keys
+            && Object.getOwnPropertySymbols === fallback.symbols,
+            "other native helpers survive the absent assign bootstrap");
+        const symbol = Symbol("fabricated-copy"), value = {id: "fabricated"};
+        const source = Object.create({inherited: "omit"});
+        source.alpha = value;
+        source.overlap = "first";
+        source[symbol] = value;
+        Object.defineProperty(source, "hidden", {value: "omit", enumerable: false});
+        const target = {existing: "retain", overlap: "old"};
+        const result = Object.assign(target, null, undefined, source,
+            {overlap: "last"}, "ab");
+        check(result === target && target.existing === "retain"
+            && target.alpha === value && target[symbol] === value
+            && target.overlap === "last" && target[0] === "a" && target[1] === "b",
+            "assign returns its target and shallowly copies ordered sources");
+        check(Object.keys(target).sort().join(",") === "0,1,alpha,existing,overlap"
+            && Object.getOwnPropertySymbols(target).length === 1
+            && Object.getOwnPropertySymbols(target)[0] === symbol
+            && !Object.hasOwn(target, "hidden") && !Object.hasOwn(target, "inherited"),
+            "only own enumerable string and symbol properties are copied");
+        let reads = 0;
+        const changing = {};
+        Object.defineProperty(changing, "first", {
+            enumerable: true,
+            get() {
+                reads++;
+                delete changing.later;
+                changing.added = "too late";
+                return value;
+            },
+        });
+        changing.later = "remove";
+        const copied = Object.assign({}, changing);
+        const descriptor = Object.getOwnPropertyDescriptor(copied, "first");
+        check(reads === 1 && Object.keys(copied).join(",") === "first"
+            && copied.first === value && descriptor.value === value
+            && descriptor.get === undefined && !Object.hasOwn(copied, "added"),
+            "source keys are captured before getters and values are assigned");
+""",
+        )
+
+    def test_real_sdk_assign_fallback_preserves_assignment_failures(self):
+        self._assert_single_sdk_fallback(
+            "/assign-fallback.html",
+            r"""
+        expectTypeError(() => Object.assign(null, {value: 1}), "null target");
+        expectTypeError(() => Object.assign(undefined, {value: 1}), "undefined target");
+        const original = new Error("fabricated-source-getter");
+        let laterReads = 0, observed;
+        const source = {
+            before: "copied",
+            get stop() { throw original; },
+            get after() { laterReads++; return "unread"; },
+        };
+        const target = {};
+        try {
+            Object.assign(target, source, {last: "unreached"});
+        } catch (error) {
+            observed = error;
+        }
+        check(observed === original && target.before === "copied" && laterReads === 0
+            && Object.keys(target).join(",") === "before",
+            "getter failure preserves its identity and earlier writes only");
+        const blocked = {};
+        Object.defineProperty(blocked, "fixed", {
+            value: "retain", writable: false, enumerable: true,
+        });
+        expectTypeError(() => Object.assign(blocked,
+            {before: "copied", fixed: "refused", after: "unreached"},
+            {last: "unreached"}), "non-writable target property");
+        check(blocked.fixed === "retain" && blocked.before === "copied"
+            && Object.keys(blocked).sort().join(",") === "before,fixed",
+            "assignment refusal retains earlier writes and stops later writes");
+        const value = {id: "fabricated-setter"}, calls = [], setterTarget = {};
+        function receive(next) { calls.push({owner: this, value: next}); }
+        Object.defineProperty(setterTarget, "value", {set: receive, enumerable: true});
+        check(Object.assign(setterTarget, {value}) === setterTarget
+            && calls.length === 1 && calls[0].owner === setterTarget
+            && calls[0].value === value
+            && Object.getOwnPropertyDescriptor(setterTarget, "value").set === receive,
+            "assign calls the target setter instead of replacing its descriptor");
 """,
         )
 
