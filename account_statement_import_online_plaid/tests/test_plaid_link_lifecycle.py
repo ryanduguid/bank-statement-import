@@ -136,11 +136,23 @@ delete window.URLSearchParams;
 plaidSingleSdkFallback.before = typeof URLSearchParams;
 </script>"""
 
+WEAKMAP_FALLBACK_BOOTSTRAP = r"""<script>
+window.plaidSingleSdkFallback = {
+    owner: window, name: "WeakMap", native: WeakMap,
+    concat: Array.prototype.concat, arrayFrom: Array.from,
+    indexOf: Array.prototype.indexOf, assign: Object.assign,
+    natives: {URL, URLSearchParams, Map, Set, WeakSet, Promise},
+};
+delete window.WeakMap;
+plaidSingleSdkFallback.before = typeof WeakMap;
+</script>"""
+
 SDK_FALLBACK_PAGES = {
     "/array-fallbacks.html": ARRAY_FALLBACK_BOOTSTRAP,
     "/indexof-fallback.html": INDEXOF_FALLBACK_BOOTSTRAP,
     "/arrayfrom-fallback.html": ARRAY_FROM_FALLBACK_BOOTSTRAP,
     "/urlsearchparams-fallback.html": URL_SEARCH_PARAMS_FALLBACK_BOOTSTRAP,
+    "/weakmap-fallback.html": WEAKMAP_FALLBACK_BOOTSTRAP,
 }
 
 
@@ -503,10 +515,21 @@ class TestPlaidLinkLifecycle(HttpCase):
         check(successes.length === 0 && exits.length === 1 && exits[0][0] === null
             && exits[0][1].status === "cancelled" && frame.style.display === "none",
             "cancellation retains its callback payload without a success callback");
+        handler.open();
+        await take(frame, "open");
+        const metadata = {
+            public_token: "public-sandbox-fabricated",
+            accounts: [{id: "fabricated-fallback-account"}],
+        };
+        await emit(frame, "connected", {metadata});
+        check(successes.length === 1 && successes[0][0] === metadata.public_token
+            && successes[0][1].accounts[0].id === "fabricated-fallback-account"
+            && exits.length === 1 && frame.style.display === "none",
+            "reopening delivers the real success token and account metadata");
         handler.destroy();
         handler = null;
-        check(!frame.isConnected && successes.length === 0,
-            "destroy removes the owned frame without reporting success");
+        check(!frame.isConnected && successes.length === 1 && exits.length === 1,
+            "destroy removes the owned frame without adding callbacks");
     } finally {
         if (handler) handler.destroy();
         window.removeEventListener("message", record);
@@ -653,6 +676,160 @@ class TestPlaidLinkLifecycle(HttpCase):
             }
             check(observed === original && steps === 1 && closes === 1,
                 "mapper failure closes once and retains the original error");
+        }
+""",
+        )
+
+    def test_real_sdk_weakmap_fallback_preserves_object_and_frozen_key_storage(self):
+        self._assert_single_sdk_fallback(
+            "/weakmap-fallback.html",
+            r"""
+        for (const [name, native] of Object.entries(fallback.natives)) {
+            check(window[name] === native, `${name} remains native`);
+        }
+        check(Array.from === fallback.arrayFrom
+            && Array.prototype.indexOf === fallback.indexOf
+            && Object.assign === fallback.assign, "other native helpers survive");
+        const map = new WeakMap(), other = new WeakMap();
+        const key = {label: "first"}, distinct = {label: "first"};
+        Object.defineProperty(key, "sentinel", {value: 7});
+        const originalNames = Object.getOwnPropertyNames(key);
+        check(map.get(key) === undefined && map.has(key) === false
+            && map.delete(key) === false, "a new object key is absent");
+        check(map.set(key, "initial") === map
+            && map.set(distinct, "separate") === map
+            && map.get(key) === "initial" && map.get(distinct) === "separate",
+            "set is chainable and equal-looking objects retain distinct identities");
+        map.set(key, "updated");
+        other.set(key, "other-map");
+        check(map.get(key) === "updated" && other.get(key) === "other-map"
+            && other.has(distinct) === false && other.delete(distinct) === false,
+            "overwrites and metadata from one map do not affect another map");
+        map.set(distinct, undefined);
+        check(map.has(distinct) === true && map.get(distinct) === undefined,
+            "has distinguishes a stored undefined value from an absent key");
+        const callable = function fixtureKey() {}, array = [];
+        map.set(callable, "function").set(array, "array");
+        check(map.get(callable) === "function" && map.get(array) === "array",
+            "functions and arrays are valid identity keys");
+        check(Object.keys(key).join(",") === "label"
+            && JSON.stringify(key) === '{"label":"first"}'
+            && key.sentinel === 7
+            && Object.getOwnPropertyDescriptor(key, "sentinel").enumerable === false,
+            "fallback storage preserves visible enumerable and non-enumerable fields");
+        const storedNames = Object.getOwnPropertyNames(key);
+        const addedNames = storedNames.filter((name) => !originalNames.includes(name));
+        check(originalNames.every((name) => storedNames.includes(name))
+            && addedNames.length === 1,
+            "reflection retains original names and exposes one SDK metadata name");
+        const metadataDescriptor = Object.getOwnPropertyDescriptor(key, addedNames[0]);
+        check(metadataDescriptor.enumerable === false
+            && metadataDescriptor.configurable === false
+            && metadataDescriptor.writable === false,
+            "SDK metadata remains non-enumerable and cannot be redefined");
+        const frozen = Object.freeze({label: "frozen"});
+        const closed = Object.preventExtensions({label: "closed"});
+        const later = {label: "later"};
+        check(map.get(frozen) === undefined && map.has(frozen) === false
+            && map.delete(frozen) === false, "an unseen frozen key is absent");
+        map.set(frozen, "first-frozen").set(closed, "closed-value");
+        map.set(later, "before-freeze");
+        Object.freeze(later);
+        map.set(later, "after-freeze");
+        other.set(frozen, "independent-frozen");
+        map.set(frozen, "updated-frozen");
+        check(map.get(frozen) === "updated-frozen" && map.has(frozen) === true
+            && map.get(closed) === "closed-value" && map.has(closed) === true
+            && map.get(later) === "after-freeze",
+            "keys closed before and after insertion retain independent values");
+        check(map.delete(frozen) === true && map.delete(frozen) === false
+            && map.get(frozen) === undefined && map.has(frozen) === false
+            && map.get(closed) === "closed-value"
+            && other.get(frozen) === "independent-frozen",
+            "frozen deletion removes only the selected key from its own map");
+        map.set(frozen, undefined);
+        check(map.has(frozen) === true && map.get(frozen) === undefined
+            && map.delete(closed) === true && map.delete(closed) === false,
+            "frozen keys support reinsertion, undefined values and repeated deletion");
+        check(map.delete(key) === true && map.delete(key) === false
+            && other.get(key) === "other-map",
+            "ordinary deletion preserves other maps");
+        for (const primitive of [null, undefined, false, true, 0, 1, "", "key"]) {
+            check(map.get(primitive) === undefined && map.has(primitive) === false
+                && map.delete(primitive) === false, "primitive lookup is absent");
+            expectTypeError(() => map.set(primitive, "refused"), "primitive set");
+        }
+        for (const method of ["get", "has", "delete", "set"]) {
+            expectTypeError(() => WeakMap.prototype[method].call({}, key, "value"),
+                `${method} refuses an incompatible receiver`);
+        }
+        expectTypeError(() => WeakMap(), "WeakMap requires new");
+""",
+        )
+
+    def test_real_sdk_weakmap_fallback_preserves_finite_constructor_iteration(self):
+        self._assert_single_sdk_fallback(
+            "/weakmap-fallback.html",
+            r"""
+        for (const [name, native] of Object.entries(fallback.natives)) {
+            check(window[name] === native, `${name} remains native`);
+        }
+        check(Array.from === fallback.arrayFrom
+            && Array.prototype.indexOf === fallback.indexOf
+            && Object.assign === fallback.assign, "other native helpers survive");
+        const key = {}, second = {}, absent = {};
+        check(new WeakMap().has(absent) === false
+            && new WeakMap(null).has(absent) === false
+            && new WeakMap(undefined).has(absent) === false,
+            "missing, null and undefined constructor inputs create empty maps");
+        const pairs = new WeakMap([[key, "first"], [key, "last"], [second]]);
+        check(pairs.get(key) === "last" && pairs.has(second) === true
+            && pairs.get(second) === undefined, "array entries replace duplicate keys");
+        let steps = 0;
+        const value = {label: "same-value"};
+        const iterable = {[Symbol.iterator]() {
+            return {next() {
+                steps++;
+                if (steps === 1) return {done: false, value: [key, value]};
+                if (steps === 2) return {done: false, value: [second, "second"]};
+                return {done: true};
+            }};
+        }};
+        const copied = new WeakMap(iterable);
+        check(steps === 3 && copied.get(key) === value
+            && copied.get(second) === "second",
+            "finite custom iteration stores entries");
+        for (const input of [1, true, {}, "x"]) {
+            expectTypeError(() => new WeakMap(input), "invalid constructor input");
+        }
+        for (const entry of [1, null, undefined, [1, "value"], [null, "value"]]) {
+            expectTypeError(() => new WeakMap([entry]), "invalid constructor entry");
+        }
+        for (const slot of ["0", "1"]) {
+            for (const failReturn of [false, true]) {
+                const failure = new Error("fabricated entry read failure");
+                const closeFailure = new Error("fabricated iterator close failure");
+                const entry = {0: {}, 1: "unused"};
+                Object.defineProperty(entry, slot, {get() { throw failure; }});
+                let reads = 0, closes = 0, observed;
+                const failing = {[Symbol.iterator]() {
+                    return {
+                        next() {
+                            reads++;
+                            return reads === 1 ? {done: false, value: entry}
+                                : {done: true};
+                        },
+                        return() {
+                            closes++;
+                            if (failReturn) throw closeFailure;
+                            return {done: true};
+                        },
+                    };
+                }};
+                try { new WeakMap(failing); } catch (error) { observed = error; }
+                check(observed === failure && reads === 1 && closes === 1,
+                    "entry failure closes once and preserves the original error");
+            }
         }
 """,
         )
