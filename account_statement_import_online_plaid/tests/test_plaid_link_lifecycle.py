@@ -96,6 +96,19 @@ WEB3_COMPANIONS = (
 )
 
 
+ARRAY_FALLBACK_BOOTSTRAP = r"""<script>
+// The SDK needs concat to build export keys before it can install polyfills.
+window.plaidArrayFallbacks = {
+    native: {concat: Array.prototype.concat}, before: {},
+};
+for (const name of ["filter", "map", "reduce"]) {
+    plaidArrayFallbacks.native[name] = Array.prototype[name];
+    delete Array.prototype[name];
+    plaidArrayFallbacks.before[name] = typeof Array.prototype[name];
+}
+</script>"""
+
+
 PLAID_FORM_PAGE = (
     r"""<!doctype html><meta charset="utf-8"><title>Fabricated Plaid form</title>
 <form id="plaid-form" method="get" action="/submission.html"
@@ -176,11 +189,20 @@ class TestPlaidLinkLifecycle(HttpCase):
         ):
             if parsed.path == "/form.html":
                 content = PLAID_FORM_PAGE
-            elif parsed.path in ("/web3.html", "/uuid-fallback.html"):
+            elif parsed.path in (
+                "/web3.html",
+                "/uuid-fallback.html",
+                "/array-fallbacks.html",
+            ):
                 content = (
                     '<!doctype html><meta charset="utf-8">'
                     "<title>Fabricated Plaid lifecycle</title>"
-                    '<script src="/link-initialize.js"></script>'
+                    + (
+                        ARRAY_FALLBACK_BOOTSTRAP
+                        if parsed.path == "/array-fallbacks.html"
+                        else ""
+                    )
+                    + '<script src="/link-initialize.js"></script>'
                 )
             elif parsed.path == "/link-initialize.js":
                 sdk = (
@@ -245,6 +267,164 @@ class TestPlaidLinkLifecycle(HttpCase):
                 self.assertEqual(response, expected)
                 self.assertTrue(self._fixture_requests.empty())
                 self.assertTrue(self._companion_responses.empty())
+
+    def test_real_sdk_restores_missing_array_methods_and_keeps_link_usable(self):
+        self.browser_js(
+            "https://plaid-form.invalid/array-fallbacks.html",
+            BROWSER_HARNESS
+            + r"""
+(async () => {
+    let handler;
+    const bodyStyle = document.body.style.cssText;
+    const successes = [], exits = [];
+    function expectTypeError(run, label) {
+        try {
+            run();
+        } catch (error) {
+            check(error instanceof TypeError, label);
+            return;
+        }
+        throw new Error(`${label}: expected TypeError`);
+    }
+    try {
+        for (const name of ["filter", "map", "reduce"]) {
+            check(typeof plaidArrayFallbacks.native[name] === "function"
+                && plaidArrayFallbacks.before[name] === "undefined",
+                `${name} is genuinely absent before the original SDK loads`);
+            check(typeof Array.prototype[name] === "function"
+                && Array.prototype[name] !== plaidArrayFallbacks.native[name]
+                && !Array.prototype.propertyIsEnumerable(name),
+                `${name} is restored as a non-enumerable fallback`);
+        }
+
+        check(Array.prototype.concat === plaidArrayFallbacks.native.concat,
+            "the SDK preserves the working native concat required at startup");
+        const spread = {1: "middle", length: 3,
+            [Symbol.isConcatSpreadable]: true};
+        const combined = ["head"].concat(spread, "tail");
+        check(combined.length === 5 && combined[0] === "head"
+            && !(1 in combined) && combined[2] === "middle"
+            && !(3 in combined) && combined[4] === "tail",
+            "concat preserves sparse spreadable entries and following values");
+        const opaque = [1, 2];
+        opaque[Symbol.isConcatSpreadable] = false;
+        const unspread = [].concat(opaque);
+        check(unspread.length === 1 && unspread[0] === opaque,
+            "concat retains a non-spreadable array as one value");
+        class Result extends Array {}
+        class Source extends Array {
+            static get [Symbol.species]() { return Result; }
+        }
+        const speciesResult = new Source(1, 2).concat([3]);
+        check(speciesResult instanceof Result
+            && JSON.stringify(speciesResult) === "[1,2,3]",
+            "concat respects the receiver's array species");
+        const huge = {length: Number.MAX_SAFE_INTEGER,
+            [Symbol.isConcatSpreadable]: true};
+        Object.defineProperty(huge, "0", {get() {
+            throw new Error("overflow must be refused before reading an entry");
+        }});
+        expectTypeError(() => ["head"].concat(huge),
+            "concat refuses a result longer than the safe integer limit");
+        expectTypeError(() => Array.prototype.concat.call(null),
+            "concat refuses a null receiver");
+
+        const sparse = new Array(4);
+        sparse[1] = 2;
+        sparse[3] = 4;
+        const context = {offset: 10}, mapVisits = [];
+        const mapped = sparse.map(function (value, index, input) {
+            mapVisits.push([value, index, input === sparse, this === context]);
+            return value + this.offset;
+        }, context);
+        check(mapped.length === 4 && !(0 in mapped) && mapped[1] === 12
+            && !(2 in mapped) && mapped[3] === 14
+            && JSON.stringify(mapVisits) === "[[2,1,true,true],[4,3,true,true]]",
+            "map preserves holes, callback arguments and thisArg");
+        const changing = [1, 2, 3], changedVisits = [];
+        const changed = changing.map((value, index) => {
+            changedVisits.push(index);
+            if (index === 0) {
+                delete changing[1];
+                changing.push(4);
+            }
+            return value * 2;
+        });
+        check(changed.length === 3 && changed[0] === 2 && !(1 in changed)
+            && changed[2] === 6 && JSON.stringify(changedVisits) === "[0,2]",
+            "map skips deleted entries and retains its initial iteration bound");
+        const arrayLike = Object.assign(Object.create({1: 3}),
+            {0: 2, 2: 5, length: 3});
+        const filterVisits = [];
+        const filtered = Array.prototype.filter.call(arrayLike,
+            function (value, index, input) {
+                filterVisits.push([index, input === arrayLike, this === context]);
+                return value % 2 === 1;
+            }, context);
+        check(JSON.stringify(filtered) === "[3,5]"
+            && JSON.stringify(filterVisits)
+                === "[[0,true,true],[1,true,true],[2,true,true]]",
+            "filter visits inherited array-like entries with the supplied context");
+        expectTypeError(() => sparse.map(null), "map requires a callback");
+        expectTypeError(() => sparse.filter(null), "filter requires a callback");
+        expectTypeError(() => Array.prototype.map.call(undefined, () => 0),
+            "map refuses an undefined receiver");
+
+        const reduceVisits = [];
+        const total = Array.prototype.reduce.call(arrayLike,
+            (previous, value, index, input) => {
+                reduceVisits.push([previous, value, index, input === arrayLike]);
+                return previous + value;
+            });
+        check(total === 10 && JSON.stringify(reduceVisits)
+            === "[[2,3,1,true],[5,5,2,true]]",
+            "reduce takes its initial value from the first present entry");
+        check(sparse.reduce((previous, value) => previous + value, 10) === 16,
+            "reduce preserves an explicit initial value and skips holes");
+        let emptyCalls = 0;
+        check(new Array(3).reduce(() => { emptyCalls++; }, 7) === 7
+            && emptyCalls === 0, "empty sparse reduction retains its seed");
+        expectTypeError(() => [].reduce(() => 0),
+            "reduce refuses an empty array without a seed");
+        expectTypeError(() => new Array(3).reduce(() => 0),
+            "reduce refuses an all-hole array without a seed");
+        expectTypeError(() => [].reduce(null, 0),
+            "reduce validates its callback even for an empty seeded array");
+
+        handler = Plaid.create({
+            env: "sandbox", token: "link-sandbox-fabricated",
+            onSuccess: (...args) => successes.push(args),
+            onExit: (...args) => exits.push(args),
+        }, {forceDesktop: true});
+        const frame = frameFor();
+        const configured = (await take(frame, "configure")).message.config;
+        check(configured.origin === location.origin,
+            "the SDK configures its owned frame after installing fallbacks");
+        handler.open();
+        await take(frame, "open");
+        handler.exit({force: true});
+        await take(frame, "exit");
+        await emit(frame, "exit", {error: null, metadata: {status: "cancelled"}});
+        check(successes.length === 0 && exits.length === 1 && exits[0][0] === null
+            && exits[0][1].status === "cancelled" && frame.style.display === "none",
+            "normal cancellation preserves the callback payload with fallbacks");
+        handler.destroy();
+        handler = null;
+        check(!frame.isConnected && successes.length === 0,
+            "destroy removes the owned frame without reporting a success");
+    } finally {
+        if (handler) handler.destroy();
+        window.removeEventListener("message", record);
+        document.body.style.cssText = bodyStyle;
+    }
+    console.log("test successful");
+})().catch((error) => console.error(error.stack));
+""",
+            ready="typeof Plaid !== 'undefined' && typeof Plaid.create === 'function'",
+            login="admin",
+            timeout=90,
+        )
+        self.assertFalse(self._fixture_requests.empty())
 
     def test_insecure_page_generates_uuid_fallback_across_reopen(self):
         self.browser_js(
