@@ -158,6 +158,21 @@ delete window.WeakMap;
 plaidSingleSdkFallback.before = typeof WeakMap;
 </script>"""
 
+REFLECTION_FALLBACK_BOOTSTRAP = r"""<script>
+const reflectionName = "__reflection__";
+window.plaidSingleSdkFallback = {
+    owner: Object, name: reflectionName, native: Object[reflectionName],
+    concat: Array.prototype.concat, arrayFrom: Array.from, ownKeys: Reflect.ownKeys,
+    symbol: Symbol,
+    natives: {keys: Object.keys, descriptors: Object.getOwnPropertyDescriptors,
+        names: Object.getOwnPropertyNames, descriptor: Object.getOwnPropertyDescriptor,
+        symbols: Object.getOwnPropertySymbols, define: Object.defineProperty,
+        create: Object.create, assign: Object.assign},
+};
+delete Object[reflectionName];
+plaidSingleSdkFallback.before = typeof Object[reflectionName];
+</script>"""
+
 COLLECTION_FALLBACK_BOOTSTRAP = r"""<script>
 const collectionName = "__collection__";
 window.plaidCollectionFallback = {
@@ -182,6 +197,12 @@ SDK_FALLBACK_PAGES = {
     "/urlsearchparams-fallback.html": URL_SEARCH_PARAMS_FALLBACK_BOOTSTRAP,
     "/assign-fallback.html": ASSIGN_FALLBACK_BOOTSTRAP,
     "/weakmap-fallback.html": WEAKMAP_FALLBACK_BOOTSTRAP,
+    "/keys-fallback.html": REFLECTION_FALLBACK_BOOTSTRAP.replace(
+        "__reflection__", "keys"
+    ),
+    "/descriptors-fallback.html": REFLECTION_FALLBACK_BOOTSTRAP.replace(
+        "__reflection__", "getOwnPropertyDescriptors"
+    ),
     "/map-fallback.html": COLLECTION_FALLBACK_BOOTSTRAP.replace(
         "__collection__", "Map"
     ),
@@ -712,6 +733,123 @@ class TestPlaidLinkLifecycle(HttpCase):
             check(observed === original && steps === 1 && closes === 1,
                 "mapper failure closes once and retains the original error");
         }
+""",
+        )
+
+    def test_real_sdk_keys_fallback_preserves_own_enumerable_names(self):
+        self._assert_single_sdk_fallback(
+            "/keys-fallback.html",
+            r"""
+        const natives = fallback.natives;
+        check(Object.getOwnPropertyDescriptors === natives.descriptors
+            && Object.getOwnPropertyNames === natives.names
+            && Object.getOwnPropertyDescriptor === natives.descriptor
+            && Object.getOwnPropertySymbols === natives.symbols
+            && Object.defineProperty === natives.define
+            && Object.create === natives.create
+            && Object.assign === natives.assign && Array.from === fallback.arrayFrom
+            && Reflect.ownKeys === fallback.ownKeys && Symbol === fallback.symbol,
+            "only the selected reflection API is replaced");
+        let reads = 0;
+        const source = Object.create({inherited: "omit"});
+        source[2] = "two";
+        source[1] = "one";
+        source.visible = "keep";
+        Object.defineProperty(source, "accessor", {enumerable: true, get() {
+            reads++;
+            throw new Error("enumerating keys must not invoke getters");
+        }});
+        source.toString = "legacy-name";
+        source.constructor = "legacy-constructor";
+        Object.defineProperty(source, "hidden", {value: "omit"});
+        source[Symbol("private-key")] = "omit";
+        check(JSON.stringify(Object.keys(source)) ===
+            '["1","2","visible","accessor","toString","constructor"]',
+            "numeric order and enumerable legacy names are preserved exactly once");
+        check(reads === 0, "key enumeration does not evaluate an accessor");
+        const bare = Object.create(null);
+        bare.constructor = "own";
+        bare.visible = "own";
+        check(JSON.stringify(Object.keys(bare)) === '["constructor","visible"]',
+            "null-prototype objects retain their own enumerable names");
+        check(JSON.stringify(Object.keys("ab")) === '["0","1"]'
+            && JSON.stringify(Object.keys({})) === '[]',
+            "boxed strings expose indices and an empty object has no keys");
+        expectTypeError(() => Object.keys(null), "null has no object keys");
+        expectTypeError(() => Object.keys(undefined), "undefined has no object keys");
+""",
+        )
+
+    def test_real_sdk_descriptors_fallback_preserves_property_contracts(self):
+        self._assert_single_sdk_fallback(
+            "/descriptors-fallback.html",
+            r"""
+        const natives = fallback.natives;
+        check(Object.keys === natives.keys
+            && Object.getOwnPropertyNames === natives.names
+            && Object.getOwnPropertyDescriptor === natives.descriptor
+            && Object.getOwnPropertySymbols === natives.symbols
+            && Object.defineProperty === natives.define
+            && Object.create === natives.create
+            && Object.assign === natives.assign && Array.from === fallback.arrayFrom
+            && Reflect.ownKeys === fallback.ownKeys && Symbol === fallback.symbol,
+            "singular reflection and other native helpers remain available");
+        let reads = 0, writes = 0;
+        const getter = () => { reads++; throw new Error("getter must not run"); };
+        const setter = () => { writes++; throw new Error("setter must not run"); };
+        const symbol = Symbol("fabricated-descriptor"), sentinel = {fixture: "private"};
+        const source = Object.create({inherited: "omit"});
+        Object.defineProperties(source, {
+            visible: {value: "keep", writable: true,
+                enumerable: true, configurable: true},
+            hidden: {value: 7},
+            accessor: {get: getter, set: setter, enumerable: true, configurable: true},
+        });
+        Object.defineProperty(source, symbol,
+            {value: sentinel, enumerable: true, configurable: true});
+        Object.defineProperty(source, "__proto__",
+            {value: sentinel, writable: true, enumerable: true, configurable: true});
+        const result = Object.getOwnPropertyDescriptors(source);
+        check(JSON.stringify(Object.keys(result)) ===
+            '["visible","hidden","accessor","__proto__"]'
+            && Object.getOwnPropertySymbols(result).length === 1
+            && Object.getOwnPropertySymbols(result)[0] === symbol
+            && !Object.hasOwn(result, "inherited"),
+            "all and only own string and symbol descriptors are included");
+        check(JSON.stringify(result.visible) ===
+            '{"value":"keep","writable":true,"enumerable":true,"configurable":true}'
+            && JSON.stringify(result.hidden) ===
+            '{"value":7,"writable":false,"enumerable":false,"configurable":false}',
+            "data values and descriptor flags are exact");
+        check(result.accessor.get === getter && result.accessor.set === setter
+            && result.accessor.enumerable && result.accessor.configurable
+            && !Object.hasOwn(result.accessor, "value")
+            && !Object.hasOwn(result.accessor, "writable")
+            && reads === 0 && writes === 0,
+            "accessor identity and flags survive without invoking either function");
+        check(result[symbol].value === sentinel && !result[symbol].writable
+            && result[symbol].enumerable && result[symbol].configurable
+            && Object.getPrototypeOf(result) === Object.prototype
+            && Object.hasOwn(result, "__proto__") && result.__proto__.value === sentinel
+            && result.__proto__.writable && result.__proto__.enumerable
+            && result.__proto__.configurable,
+            "symbol and proto-named entries preserve the result prototype");
+        result.visible.value = "changed descriptor copy";
+        check(source.visible === "keep", "descriptor copies do not mutate source data");
+        const text = Object.getOwnPropertyDescriptors("ab");
+        check(JSON.stringify(Object.keys(text)) === '["0","1","length"]'
+            && text[0].value === "a" && text[1].value === "b" && text.length.value === 2
+            && !text[0].writable && text[0].enumerable && !text[0].configurable
+            && !text.length.writable && !text.length.enumerable
+            && !text.length.configurable,
+            "boxed strings retain literal index and length descriptor contracts");
+        check(JSON.stringify(Object.getOwnPropertyDescriptors({})) === '{}'
+            && JSON.stringify(Object.getOwnPropertyDescriptors(3)) === '{}',
+            "empty objects and boxed numbers have no own descriptors");
+        expectTypeError(() => Object.getOwnPropertyDescriptors(null),
+            "null descriptors");
+        expectTypeError(() => Object.getOwnPropertyDescriptors(undefined),
+            "undefined descriptors");
 """,
         )
 
