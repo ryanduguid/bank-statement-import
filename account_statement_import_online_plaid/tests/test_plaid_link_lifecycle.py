@@ -109,27 +109,38 @@ for (const name of ["filter", "map", "reduce"]) {
 </script>"""
 
 INDEXOF_FALLBACK_BOOTSTRAP = r"""<script>
-window.plaidSingleArrayFallback = {
+window.plaidSingleSdkFallback = {
     owner: Array.prototype, name: "indexOf", native: Array.prototype.indexOf,
     concat: Array.prototype.concat, other: Array.from,
 };
 delete Array.prototype.indexOf;
-plaidSingleArrayFallback.before = typeof Array.prototype.indexOf;
+plaidSingleSdkFallback.before = typeof Array.prototype.indexOf;
 </script>"""
 
 ARRAY_FROM_FALLBACK_BOOTSTRAP = r"""<script>
-window.plaidSingleArrayFallback = {
+window.plaidSingleSdkFallback = {
     owner: Array, name: "from", native: Array.from,
     concat: Array.prototype.concat, other: Array.prototype.indexOf,
 };
 delete Array.from;
-plaidSingleArrayFallback.before = typeof Array.from;
+plaidSingleSdkFallback.before = typeof Array.from;
 </script>"""
 
-ARRAY_FALLBACK_PAGES = {
+URL_SEARCH_PARAMS_FALLBACK_BOOTSTRAP = r"""<script>
+window.plaidSingleSdkFallback = {
+    owner: window, name: "URLSearchParams", native: URLSearchParams,
+    concat: Array.prototype.concat, other: URL, arrayFrom: Array.from,
+    request: Request, fetch, headers: Headers,
+};
+delete window.URLSearchParams;
+plaidSingleSdkFallback.before = typeof URLSearchParams;
+</script>"""
+
+SDK_FALLBACK_PAGES = {
     "/array-fallbacks.html": ARRAY_FALLBACK_BOOTSTRAP,
     "/indexof-fallback.html": INDEXOF_FALLBACK_BOOTSTRAP,
     "/arrayfrom-fallback.html": ARRAY_FROM_FALLBACK_BOOTSTRAP,
+    "/urlsearchparams-fallback.html": URL_SEARCH_PARAMS_FALLBACK_BOOTSTRAP,
 }
 
 
@@ -214,12 +225,12 @@ class TestPlaidLinkLifecycle(HttpCase):
             if parsed.path == "/form.html":
                 content = PLAID_FORM_PAGE
             elif parsed.path in ("/web3.html", "/uuid-fallback.html") or (
-                parsed.path in ARRAY_FALLBACK_PAGES
+                parsed.path in SDK_FALLBACK_PAGES
             ):
                 content = (
                     '<!doctype html><meta charset="utf-8">'
                     "<title>Fabricated Plaid lifecycle</title>"
-                    + ARRAY_FALLBACK_PAGES.get(parsed.path, "")
+                    + SDK_FALLBACK_PAGES.get(parsed.path, "")
                     + '<script src="/link-initialize.js"></script>'
                 )
             elif parsed.path == "/link-initialize.js":
@@ -444,7 +455,7 @@ class TestPlaidLinkLifecycle(HttpCase):
         )
         self.assertFalse(self._fixture_requests.empty())
 
-    def _assert_single_array_fallback(self, route, assertions):
+    def _assert_single_sdk_fallback(self, route, assertions):
         self.browser_js(
             "https://plaid-form.invalid" + route,
             BROWSER_HARNESS
@@ -463,9 +474,9 @@ class TestPlaidLinkLifecycle(HttpCase):
         throw new Error(`${label}: expected TypeError`);
     }
     try {
-        const fallback = plaidSingleArrayFallback;
+        const fallback = plaidSingleSdkFallback;
         check(typeof fallback.native === "function" && fallback.before === "undefined",
-            "the selected native method is absent before the original SDK loads");
+            "the selected native API is absent before the original SDK loads");
         check(typeof fallback.owner[fallback.name] === "function"
             && fallback.owner[fallback.name] !== fallback.native
             && !fallback.owner.propertyIsEnumerable(fallback.name),
@@ -511,7 +522,7 @@ class TestPlaidLinkLifecycle(HttpCase):
         self.assertFalse(self._fixture_requests.empty())
 
     def test_real_sdk_indexof_fallback_preserves_search_contracts(self):
-        self._assert_single_array_fallback(
+        self._assert_single_sdk_fallback(
             "/indexof-fallback.html",
             r"""
         check(Array.from === fallback.other, "Array.from remains native on this page");
@@ -561,7 +572,7 @@ class TestPlaidLinkLifecycle(HttpCase):
         )
 
     def test_real_sdk_arrayfrom_fallback_preserves_copy_and_iterator_contracts(self):
-        self._assert_single_array_fallback(
+        self._assert_single_sdk_fallback(
             "/arrayfrom-fallback.html",
             r"""
         check(Array.prototype.indexOf === fallback.other,
@@ -645,6 +656,204 @@ class TestPlaidLinkLifecycle(HttpCase):
         }
 """,
         )
+
+    def test_real_sdk_urlsearchparams_fallback_preserves_query_contracts(self):
+        self._assert_single_sdk_fallback(
+            "/urlsearchparams-fallback.html",
+            r"""
+        const Params = URLSearchParams;
+        check(URL === fallback.other && Headers === fallback.headers
+            && Array.from === fallback.arrayFrom,
+            "the fallback retains native URL, Headers and array conversion");
+        check(new URL("https://fixture.invalid/?a=1").searchParams.get("a") === "1",
+            "native URL query handling remains usable");
+        check(new Params().size === 0 && String(new Params(undefined)) === ""
+            && String(new Params(7)) === "7=",
+            "empty and scalar constructors retain their query meaning");
+        const params = new Params("?dup=first&empty=&dup=second&space=two+words"
+            + "&encoded=%21%27%28%29%7E&unicode=%C3%A9%F0%9F%98%80"
+            + "&equals=a=b&&bare");
+        const serialized = "dup=first&empty=&dup=second&space=two+words"
+            + "&encoded=%21%27%28%29%7E&unicode=%C3%A9%F0%9F%98%80"
+            + "&equals=a%3Db&bare=";
+        check(params.size === 8 && params.get("dup") === "first"
+            && JSON.stringify(params.getAll("dup")) === '["first","second"]'
+            && params.get("empty") === "" && params.get("bare") === ""
+            && params.get("space") === "two words" && params.get("encoded") === "!'()~"
+            && params.get("unicode") === "\u00e9\u{1F600}"
+            && params.get("equals") === "a=b" && String(params) === serialized,
+            "query parsing retains duplicates, empty values, Unicode and encoding");
+        check(params.get("missing") === null && params.getAll("missing").length === 0
+            && params.has("dup") && params.has("dup", "second")
+            && !params.has("dup", "absent") && !params.has("missing"),
+            "lookup distinguishes missing keys and requested values");
+        const malformed = new Params("x=%41%C3%A9%C3%A9%ZZ");
+        check(malformed.get("x") === "A\u00e9\u00e9%ZZ"
+            && String(malformed) === "x=A%C3%A9%C3%A9%25ZZ",
+            "malformed escapes retain valid UTF-8 and invalid percent text");
+        let reads = 0;
+        const recordInput = Object.create({inherited: "ignored"});
+        Object.defineProperty(recordInput, "count", {
+            enumerable: true, get() { reads++; return 7; },
+        });
+        recordInput.nullable = null;
+        const fromRecord = new Params(recordInput);
+        check(reads === 1 && String(fromRecord) === "count=7&nullable=null"
+            && !fromRecord.has("inherited"),
+            "records read own enumerable values once and exclude inheritance");
+        let iterations = 0;
+        const pairs = {*[Symbol.iterator]() {
+            iterations++;
+            yield ["x", 1];
+            yield ["x", 2];
+        }};
+        const fromPairs = new Params(pairs), copied = new Params(fromPairs);
+        fromPairs.append("x", 3);
+        check(iterations === 1 && String(copied) === "x=1&x=2"
+            && String(fromPairs) === "x=1&x=2&x=3",
+            "iterable construction copies pairs without sharing mutable storage");
+        for (const pair of [[], ["only"], ["too", "many", "items"]]) {
+            expectTypeError(() => new Params([pair]),
+                "iterable entries require exactly two elements");
+        }
+        expectTypeError(() => new Params([null]), "primitive pairs are refused");
+        expectTypeError(() => new Params(Symbol("query")), "Symbol input is refused");
+        expectTypeError(() => Params("x=1"), "the constructor requires new");
+        const edited = new Params("key=first&keep=yes&key=second&key=third");
+        edited.set("key", "replacement");
+        edited.append("key", "last");
+        edited.set("added", "a b");
+        check(edited.size === 4
+            && String(edited) === "key=replacement&keep=yes&key=last&added=a+b",
+            "set replaces duplicates in place and append retains later duplicates");
+        edited.delete("key");
+        edited.delete("absent");
+        edited.append("filter", "one");
+        edited.append("filter", "two");
+        edited.delete("filter", "one");
+        check(edited.size === 3 && String(edited) === "keep=yes&added=a+b&filter=two"
+            && edited.has("filter", "two") && !edited.has("filter", "one"),
+            "deletion preserves unrelated entries and the selected other value");
+        const small = new Params("z=last&a=first&z=second&b=middle");
+        small.sort();
+        check(String(small) === "a=first&b=middle&z=last&z=second",
+            "small sorting is ordered and stable for duplicate keys");
+        const large = new Params([
+            ["z", "0"], ["c", "1"], ["b", "2"], ["a", "3"],
+            ["b", "4"], ["d", "5"], ["c", "6"], ["a", "7"],
+            ["e", "8"], ["b", "9"], ["d", "10"], ["f", "11"],
+        ]);
+        large.sort();
+        check(String(large) === "a=3&a=7&b=2&b=4&b=9&c=1&c=6"
+            + "&d=5&d=10&e=8&f=11&z=0",
+            "larger sorting preserves duplicate order across merge boundaries");
+        const changing = new Params("a=1&b=2"), visits = [], context = {};
+        changing.forEach(function (value, key, owner) {
+            visits.push([value, key, owner === changing, this === context,
+                arguments.length]);
+            if (key === "a") changing.append("c", "3");
+        }, context);
+        check(JSON.stringify(visits)
+            === '[["1","a",true,true,3],["2","b",true,true,3],["3","c",true,true,3]]',
+            "forEach retains arguments and context and sees finite appends");
+        check(JSON.stringify(Array.from(changing.keys())) === '["a","b","c"]'
+            && JSON.stringify(Array.from(changing.values())) === '["1","2","3"]'
+            && JSON.stringify(Array.from(changing))
+                === '[["a","1"],["b","2"],["c","3"]]',
+            "key, value and default entry iteration retain insertion order");
+        const iterator = changing.entries();
+        check(iterator[Symbol.iterator]() === iterator,
+            "the entry iterator is its own iterable");
+        check(JSON.stringify(Array.from(iterator)) === '[["a","1"],["b","2"],["c","3"]]'
+            && iterator.next().done, "entry iteration reaches exhaustion");
+        changing.append("d", "4");
+        const exhausted = iterator.next();
+        check(exhausted.done && exhausted.value === undefined,
+            "an exhausted iterator remains exhausted after a later append");
+        const unchanged = String(params);
+        expectTypeError(() => params.append("missing"), "append needs two arguments");
+        for (const name of ["delete", "get", "getAll", "has", "set"]) {
+            expectTypeError(() => params[name](),
+                `${name} needs its required arguments`);
+        }
+        expectTypeError(() => params.get.call({}, "x"), "get checks its receiver");
+        expectTypeError(() => params.entries.call({}), "entries checks its receiver");
+        expectTypeError(() => params.toString.call({}),
+            "serialization checks its receiver");
+        expectTypeError(() => params.forEach(null), "forEach requires a callback");
+        expectTypeError(() => params.append("x", Symbol("value")),
+            "append refuses a Symbol value");
+        const size = Object.getOwnPropertyDescriptor(Params.prototype, "size").get;
+        expectTypeError(() => size.call({}), "size checks its receiver");
+        check(String(params) === unchanged,
+            "rejected operations preserve all existing query entries");
+""",
+        )
+
+    def test_real_sdk_urlsearchparams_fallback_serializes_real_web_requests(self):
+        self._assert_single_sdk_fallback(
+            "/urlsearchparams-fallback.html",
+            r"""
+        check(URL === fallback.other && Headers === fallback.headers
+            && Array.from === fallback.arrayFrom,
+            "web integration retains the other native APIs");
+        check(Request !== fallback.request
+            && Request.prototype === fallback.request.prototype
+            && fetch !== fallback.fetch,
+            "the genuine SDK installs its Request and fetch integration");
+        const target = "https://plaid-form.invalid/submission.html";
+        const body = new URLSearchParams([
+            ["memo", "two words"], ["unicode", "\u00e9"], ["dup", "1"], ["dup", "2"],
+        ]);
+        const encoded = "memo=two+words&unicode=%C3%A9&dup=1&dup=2";
+        const request = new Request(target, {method: "POST", body});
+        check(request instanceof fallback.request && request.method === "POST"
+            && request.headers.get("content-type")
+                === "application/x-www-form-urlencoded;charset=UTF-8"
+            && await request.text() === encoded,
+            "Request serializes fallback parameters with the form content type");
+        const headers = new Headers({"content-type": "application/vnd.fixture",
+            "x-fixture": "preserved"});
+        const options = {method: "POST", headers, body};
+        const explicit = new Request(target, options);
+        check(explicit.headers.get("content-type") === "application/vnd.fixture"
+            && explicit.headers.get("x-fixture") === "preserved"
+            && await explicit.text() === encoded
+            && options.body === body && options.headers === headers
+            && headers.get("content-type") === "application/vnd.fixture"
+            && String(body) === encoded,
+            "explicit headers and original options survive request construction");
+        const empty = new Request(target), clone = new Request(empty);
+        const plain = new Request(target, {method: "POST", body: "plain"});
+        check(empty.method === "GET" && empty.body === null
+            && empty.headers.get("content-type") === null && clone.url === empty.url
+            && plain.headers.get("content-type") === "text/plain;charset=UTF-8"
+            && await plain.text() === "plain",
+            "other request bodies retain native defaults and string handling");
+        expectTypeError(() => Request(target), "Request still requires new");
+        for (const [suffix, init] of [
+            ["fallback", {method: "POST", body}],
+            ["plain", {method: "POST", body: "plain"}],
+        ]) {
+            const response = await fetch(`${target}?urlparams=${suffix}`, init);
+            check(response.ok
+                && (await response.text()).includes("Fabricated form receipt"),
+                "real fetch completes against the owned route for each body type");
+        }
+        const response = await fetch(new Request(`${target}?urlparams=prebuilt`));
+        check(response.ok
+            && (await response.text()).includes("Fabricated form receipt"),
+            "real fetch also accepts a prebuilt request without an options argument");
+""",
+        )
+        requests = []
+        while not self._fixture_requests.empty():
+            requests.append(self._fixture_requests.get_nowait())
+        for suffix in ("fallback", "plain", "prebuilt"):
+            self.assertIn(
+                f"https://plaid-form.invalid/submission.html?urlparams={suffix}",
+                requests,
+            )
 
     def test_insecure_page_generates_uuid_fallback_across_reopen(self):
         self.browser_js(
