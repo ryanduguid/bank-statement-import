@@ -108,6 +108,30 @@ for (const name of ["filter", "map", "reduce"]) {
 }
 </script>"""
 
+INDEXOF_FALLBACK_BOOTSTRAP = r"""<script>
+window.plaidSingleArrayFallback = {
+    owner: Array.prototype, name: "indexOf", native: Array.prototype.indexOf,
+    concat: Array.prototype.concat, other: Array.from,
+};
+delete Array.prototype.indexOf;
+plaidSingleArrayFallback.before = typeof Array.prototype.indexOf;
+</script>"""
+
+ARRAY_FROM_FALLBACK_BOOTSTRAP = r"""<script>
+window.plaidSingleArrayFallback = {
+    owner: Array, name: "from", native: Array.from,
+    concat: Array.prototype.concat, other: Array.prototype.indexOf,
+};
+delete Array.from;
+plaidSingleArrayFallback.before = typeof Array.from;
+</script>"""
+
+ARRAY_FALLBACK_PAGES = {
+    "/array-fallbacks.html": ARRAY_FALLBACK_BOOTSTRAP,
+    "/indexof-fallback.html": INDEXOF_FALLBACK_BOOTSTRAP,
+    "/arrayfrom-fallback.html": ARRAY_FROM_FALLBACK_BOOTSTRAP,
+}
+
 
 PLAID_FORM_PAGE = (
     r"""<!doctype html><meta charset="utf-8"><title>Fabricated Plaid form</title>
@@ -189,19 +213,13 @@ class TestPlaidLinkLifecycle(HttpCase):
         ):
             if parsed.path == "/form.html":
                 content = PLAID_FORM_PAGE
-            elif parsed.path in (
-                "/web3.html",
-                "/uuid-fallback.html",
-                "/array-fallbacks.html",
+            elif parsed.path in ("/web3.html", "/uuid-fallback.html") or (
+                parsed.path in ARRAY_FALLBACK_PAGES
             ):
                 content = (
                     '<!doctype html><meta charset="utf-8">'
                     "<title>Fabricated Plaid lifecycle</title>"
-                    + (
-                        ARRAY_FALLBACK_BOOTSTRAP
-                        if parsed.path == "/array-fallbacks.html"
-                        else ""
-                    )
+                    + ARRAY_FALLBACK_PAGES.get(parsed.path, "")
                     + '<script src="/link-initialize.js"></script>'
                 )
             elif parsed.path == "/link-initialize.js":
@@ -425,6 +443,208 @@ class TestPlaidLinkLifecycle(HttpCase):
             timeout=90,
         )
         self.assertFalse(self._fixture_requests.empty())
+
+    def _assert_single_array_fallback(self, route, assertions):
+        self.browser_js(
+            "https://plaid-form.invalid" + route,
+            BROWSER_HARNESS
+            + r"""
+(async () => {
+    let handler;
+    const bodyStyle = document.body.style.cssText;
+    const successes = [], exits = [];
+    function expectTypeError(run, label) {
+        try {
+            run();
+        } catch (error) {
+            check(error instanceof TypeError, label);
+            return;
+        }
+        throw new Error(`${label}: expected TypeError`);
+    }
+    try {
+        const fallback = plaidSingleArrayFallback;
+        check(typeof fallback.native === "function" && fallback.before === "undefined",
+            "the selected native method is absent before the original SDK loads");
+        check(typeof fallback.owner[fallback.name] === "function"
+            && fallback.owner[fallback.name] !== fallback.native
+            && !fallback.owner.propertyIsEnumerable(fallback.name),
+            "the original SDK installs a non-enumerable replacement");
+        check(Array.prototype.concat === fallback.concat,
+            "the native concat required by SDK startup is preserved");
+"""
+            + assertions
+            + r"""
+        handler = Plaid.create({
+            env: "sandbox", token: "link-sandbox-fabricated",
+            onSuccess: (...args) => successes.push(args),
+            onExit: (...args) => exits.push(args),
+        }, {forceDesktop: true});
+        const frame = frameFor();
+        const configured = (await take(frame, "configure")).message.config;
+        check(configured.origin === location.origin,
+            "the real SDK configures its owned frame with the fallback installed");
+        handler.open();
+        await take(frame, "open");
+        handler.exit({force: true});
+        await take(frame, "exit");
+        await emit(frame, "exit", {error: null, metadata: {status: "cancelled"}});
+        check(successes.length === 0 && exits.length === 1 && exits[0][0] === null
+            && exits[0][1].status === "cancelled" && frame.style.display === "none",
+            "cancellation retains its callback payload without a success callback");
+        handler.destroy();
+        handler = null;
+        check(!frame.isConnected && successes.length === 0,
+            "destroy removes the owned frame without reporting success");
+    } finally {
+        if (handler) handler.destroy();
+        window.removeEventListener("message", record);
+        document.body.style.cssText = bodyStyle;
+    }
+    console.log("test successful");
+})().catch((error) => console.error(error.stack));
+""",
+            ready="typeof Plaid !== 'undefined' && typeof Plaid.create === 'function'",
+            login="admin",
+            timeout=90,
+        )
+        self.assertFalse(self._fixture_requests.empty())
+
+    def test_real_sdk_indexof_fallback_preserves_search_contracts(self):
+        self._assert_single_array_fallback(
+            "/indexof-fallback.html",
+            r"""
+        check(Array.from === fallback.other, "Array.from remains native on this page");
+        const find = Array.prototype.indexOf;
+        const sparse = new Array(4);
+        sparse[1] = undefined;
+        sparse[3] = "last";
+        check(find.call(sparse, undefined) === 1
+            && find.call({length: 3}, undefined) === -1,
+            "indexOf skips holes but matches an explicitly undefined entry");
+        const inherited = Object.assign(Object.create({1: "inherited"}),
+            {0: "own", length: 2});
+        check(find.call(inherited, "inherited") === 1
+            && find.call("abc", "b") === 1,
+            "indexOf supports inherited array-like entries and string receivers");
+        const needle = {};
+        check([NaN, needle].indexOf(NaN) === -1
+            && [needle].indexOf(needle) === 0 && [needle].indexOf({}) === -1,
+            "indexOf uses strict equality and object identity");
+        const repeated = ["a", "b", "a"];
+        check(repeated.indexOf("a") === 0 && repeated.indexOf("a", 1.9) === 2
+            && repeated.indexOf("a", -1.9) === 2
+            && repeated.indexOf("a", -99) === 0
+            && repeated.indexOf("a", 99) === -1
+            && repeated.indexOf("a", Infinity) === -1
+            && repeated.indexOf("a", -Infinity) === 0
+            && repeated.indexOf("a", "2") === 2
+            && repeated.indexOf("a", NaN) === 0
+            && Object.is(repeated.indexOf("a", -0), 0),
+            "indexOf coerces and bounds fromIndex and returns positive zero");
+        const changing = {0: "first", length: 2};
+        let coercions = 0;
+        const start = {valueOf() {
+            coercions++;
+            changing.length = 0;
+            changing[1] = "created";
+            changing[2] = "created";
+            return 0;
+        }};
+        check(find.call(changing, "created", start) === 1 && coercions === 1,
+            "indexOf captures length before coercion but reads entries afterwards");
+        expectTypeError(() => find.call(null, "a"), "indexOf refuses null");
+        expectTypeError(() => find.call(undefined, "a"), "indexOf refuses undefined");
+        expectTypeError(() => repeated.indexOf("a", Symbol("start")),
+            "indexOf refuses a Symbol fromIndex");
+""",
+        )
+
+    def test_real_sdk_arrayfrom_fallback_preserves_copy_and_iterator_contracts(self):
+        self._assert_single_array_fallback(
+            "/arrayfrom-fallback.html",
+            r"""
+        check(Array.prototype.indexOf === fallback.other,
+            "indexOf remains native on this page");
+        const sparse = new Array(3);
+        sparse[1] = 7;
+        const dense = Array.from(sparse);
+        check(dense.length === 3 && 0 in dense && 1 in dense && 2 in dense
+            && dense[0] === undefined && dense[1] === 7 && dense[2] === undefined,
+            "Array.from copies sparse input into explicit dense entries");
+        const arrayLike = Object.assign(Object.create({1: 5}), {0: 3, length: 3});
+        const context = {offset: 10}, visits = [];
+        const mapped = Array.from(arrayLike, function (value, index) {
+            visits.push([value === undefined ? "missing" : value,
+                index, arguments.length, this === context]);
+            return value === undefined ? "missing" : value + this.offset;
+        }, context);
+        check(JSON.stringify(mapped) === '[13,15,"missing"]'
+            && JSON.stringify(visits)
+                === '[[3,0,2,true],[5,1,2,true],["missing",2,2,true]]',
+            "Array.from maps inherited and missing entries with exactly two arguments");
+        const changing = {0: 2, 1: 4, 2: 6, length: 3}, indexes = [];
+        const changed = Array.from(changing, (value, index) => {
+            indexes.push(index);
+            if (index === 0) {
+                delete changing[1];
+                changing[3] = 8;
+                changing.length = 4;
+            }
+            return value;
+        });
+        check(changed.length === 3 && 1 in changed && changed[1] === undefined
+            && JSON.stringify(changed) === "[2,null,6]"
+            && JSON.stringify(indexes) === "[0,1,2]",
+            "Array.from keeps its initial array-like length and reads later mutations");
+        const iterable = {
+            get length() { throw new Error("iterable length must not be read"); },
+            *[Symbol.iterator]() { yield "first"; yield "second"; },
+        };
+        check(JSON.stringify(Array.from(iterable)) === '["first","second"]',
+            "Array.from prefers the iterator over an array-like length");
+        const unicode = Array.from("A\u{1F600}B");
+        check(unicode.length === 3 && unicode[1] === "\u{1F600}"
+            && unicode[1].length === 2,
+            "Array.from retains a Unicode surrogate pair as one iterator value");
+        function Result(...args) { this.constructorArgs = args; }
+        const generic = Array.from.call(Result, {0: "a", 1: "b", length: 2});
+        const iterated = Array.from.call(Result, iterable);
+        check(generic instanceof Result && generic.length === 2
+            && generic[0] === "a" && generic[1] === "b"
+            && JSON.stringify(generic.constructorArgs) === "[2]"
+            && iterated instanceof Result && iterated.length === 2
+            && iterated[0] === "first" && iterated[1] === "second"
+            && iterated.constructorArgs.length === 0,
+            "Array.from passes length only to the array-like result constructor");
+        expectTypeError(() => Array.from(null), "Array.from refuses null");
+        expectTypeError(() => Array.from(undefined), "Array.from refuses undefined");
+        expectTypeError(() => Array.from([], null), "Array.from validates its mapper");
+        expectTypeError(() => Array.from({[Symbol.iterator]: 3}),
+            "Array.from refuses a non-callable iterator method");
+        expectTypeError(() => Array.from({[Symbol.iterator]() { return 1; }}),
+            "Array.from refuses a primitive iterator factory result");
+        for (const returnThrows of [false, true]) {
+            const original = new Error("mapper failure"), closing = new Error("close");
+            let steps = 0, closes = 0, observed;
+            const source = {[Symbol.iterator]() { return {
+                next() { return {value: ++steps, done: steps > 2}; },
+                return() {
+                    closes++;
+                    if (returnThrows) throw closing;
+                    return {};
+                },
+            }; }};
+            try {
+                Array.from(source, () => { throw original; });
+            } catch (error) {
+                observed = error;
+            }
+            check(observed === original && steps === 1 && closes === 1,
+                "mapper failure closes once and retains the original error");
+        }
+""",
+        )
 
     def test_insecure_page_generates_uuid_fallback_across_reopen(self):
         self.browser_js(
