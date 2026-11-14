@@ -158,6 +158,23 @@ delete window.WeakMap;
 plaidSingleSdkFallback.before = typeof WeakMap;
 </script>"""
 
+COLLECTION_FALLBACK_BOOTSTRAP = r"""<script>
+const collectionName = "__collection__";
+window.plaidCollectionFallback = {
+    name: collectionName, native: window[collectionName],
+    natives: {Map, Set, WeakMap, WeakSet, Symbol, Promise, URL, URLSearchParams,
+        Request, fetch, Headers},
+    arrays: {from: Array.from, concat: Array.prototype.concat,
+        indexOf: Array.prototype.indexOf, map: Array.prototype.map,
+        filter: Array.prototype.filter, reduce: Array.prototype.reduce},
+    objects: {assign: Object.assign, keys: Object.keys,
+        symbols: Object.getOwnPropertySymbols,
+        descriptor: Object.getOwnPropertyDescriptor},
+};
+delete window[collectionName];
+plaidCollectionFallback.before = typeof window[collectionName];
+</script>"""
+
 SDK_FALLBACK_PAGES = {
     "/array-fallbacks.html": ARRAY_FALLBACK_BOOTSTRAP,
     "/indexof-fallback.html": INDEXOF_FALLBACK_BOOTSTRAP,
@@ -165,6 +182,12 @@ SDK_FALLBACK_PAGES = {
     "/urlsearchparams-fallback.html": URL_SEARCH_PARAMS_FALLBACK_BOOTSTRAP,
     "/assign-fallback.html": ASSIGN_FALLBACK_BOOTSTRAP,
     "/weakmap-fallback.html": WEAKMAP_FALLBACK_BOOTSTRAP,
+    "/map-fallback.html": COLLECTION_FALLBACK_BOOTSTRAP.replace(
+        "__collection__", "Map"
+    ),
+    "/set-fallback.html": COLLECTION_FALLBACK_BOOTSTRAP.replace(
+        "__collection__", "Set"
+    ),
 }
 
 
@@ -2075,6 +2098,133 @@ class TestPlaidLinkLifecycle(HttpCase):
             timeout=90,
         )
         self.assertFalse(self._fixture_requests.empty())
+
+    def _assert_collection_fallback_wallet_discovery(self, route):
+        self.browser_js(
+            "https://plaid-form.invalid" + route,
+            BROWSER_HARNESS
+            + r"""
+(async () => {
+    let handler;
+    const fallback = plaidCollectionFallback;
+    const bodyStyle = document.body.style.cssText;
+    const names = ["ethereum", "solana", "coinbaseWalletExtension", "bitkeep"];
+    const descriptors = names.map((name) =>
+        Object.getOwnPropertyDescriptor(window, name));
+    let requests = 0;
+    const provider = (flags = {}) => ({
+        ...flags,
+        request() { requests++; throw new Error("wallet request forbidden"); },
+        enable() { requests++; throw new Error("wallet enable forbidden"); },
+        send() { requests++; throw new Error("wallet send forbidden"); },
+    });
+    const metamask = provider({isMetaMask: true});
+    const coinbase = provider({isCoinbaseWallet: true});
+    const unknown = provider();
+    const rabby = provider({isMetaMask: true, isRabby: true});
+    const cases = [
+        {name: "absent", expected: []},
+        {name: "deduplicated", ethereum: {providers: [
+            metamask, metamask, coinbase, unknown, rabby,
+        ]}, expected: ["wallet_347", "wallet_374"]},
+        {name: "removed", expected: []},
+    ];
+    try {
+        check(typeof fallback.native === "function"
+            && fallback.before === "undefined"
+            && typeof window[fallback.name] === "undefined",
+            "the selected browser collection stays absent after SDK startup");
+        for (const [name, native] of Object.entries(fallback.natives)) {
+            if (name !== fallback.name) check(window[name] === native,
+                `${name} remains native on the isolated collection page`);
+        }
+        check(Array.from === fallback.arrays.from
+            && Array.prototype.concat === fallback.arrays.concat
+            && Array.prototype.indexOf === fallback.arrays.indexOf
+            && Array.prototype.map === fallback.arrays.map
+            && Array.prototype.filter === fallback.arrays.filter
+            && Array.prototype.reduce === fallback.arrays.reduce,
+            "native array operations survive the collection bootstrap");
+        check(Object.assign === fallback.objects.assign
+            && Object.keys === fallback.objects.keys
+            && Object.getOwnPropertySymbols === fallback.objects.symbols
+            && Object.getOwnPropertyDescriptor === fallback.objects.descriptor,
+            "native property reflection survives the collection bootstrap");
+        for (const fixture of cases) {
+            for (const name of names) Object.defineProperty(window, name, {
+                configurable: true, value: fixture[name],
+            });
+            const successes = [], exits = [];
+            handler = Plaid.create({
+                env: "sandbox", token: "link-sandbox-fabricated",
+                onSuccess: (...args) => successes.push(args),
+                onExit: (...args) => exits.push(args),
+            }, {forceDesktop: true, web3ValidChains: ["eip155:1"]});
+            const frame = frameFor();
+            const config = (await take(frame, "configure")).message.config;
+            check(config.origin === location.origin,
+                "the real SDK configures its owned collection-test frame");
+            check(JSON.stringify(config.detectedWeb3WalletIds)
+                === JSON.stringify(fixture.expected),
+                `${fixture.name}: ordered IDs survive collection fallback discovery`);
+            check(requests === 0, "discovery never requests wallet access");
+            if (fixture.ethereum) {
+                handler.open();
+                await take(frame, "open");
+                handler.exit({force: true});
+                await take(frame, "exit");
+                await emit(frame, "exit", {
+                    error: null, metadata: {status: "cancelled"},
+                });
+                check(successes.length === 0 && exits.length === 1
+                    && exits[0][0] === null && exits[0][1].status === "cancelled"
+                    && frame.style.display === "none",
+                    "collection fallback cancellation preserves callbacks and hiding");
+                handler.open();
+                await take(frame, "open");
+                const metadata = {public_token: "public-sandbox-fabricated",
+                    accounts: [{id: "fabricated-collection-account"}]};
+                await emit(frame, "connected", {metadata});
+                check(successes.length === 1
+                    && successes[0][0] === metadata.public_token
+                    && successes[0][1].accounts[0].id
+                        === "fabricated-collection-account"
+                    && exits.length === 1 && frame.style.display === "none",
+                    "collection fallback reopening preserves success data and hiding");
+            }
+            handler.destroy();
+            handler = null;
+            const expectedCallbacks = fixture.ethereum ? 1 : 0;
+            check(!frame.isConnected && successes.length === expectedCallbacks
+                && exits.length === expectedCallbacks && requests === 0,
+                "each handler releases its frame without extra callbacks or access");
+            check(typeof window[fallback.name] === "undefined",
+                "discovery uses SDK collections without restoring browser globals");
+        }
+    } finally {
+        if (handler) handler.destroy();
+        names.forEach((name, index) => {
+            if (descriptors[index])
+                Object.defineProperty(window, name, descriptors[index]);
+            else delete window[name];
+        });
+        document.body.style.cssText = bodyStyle;
+        window.removeEventListener("message", record);
+    }
+    console.log("test successful");
+})().catch((error) => console.error(error.stack));
+""",
+            ready="typeof Plaid !== 'undefined' && typeof Plaid.create === 'function'",
+            login="admin",
+            timeout=90,
+        )
+        self.assertFalse(self._fixture_requests.empty())
+
+    def test_real_sdk_map_fallback_preserves_public_wallet_discovery(self):
+        self._assert_collection_fallback_wallet_discovery("/map-fallback.html")
+
+    def test_real_sdk_set_fallback_preserves_public_wallet_discovery(self):
+        self._assert_collection_fallback_wallet_discovery("/set-fallback.html")
 
     def test_injected_provider_detection_does_not_request_wallet_access(self):
         self.browser_js(
