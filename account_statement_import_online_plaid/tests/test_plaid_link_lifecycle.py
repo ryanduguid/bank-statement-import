@@ -200,6 +200,9 @@ SDK_FALLBACK_PAGES = {
     "/keys-fallback.html": REFLECTION_FALLBACK_BOOTSTRAP.replace(
         "__reflection__", "keys"
     ),
+    "/entries-fallback.html": REFLECTION_FALLBACK_BOOTSTRAP.replace(
+        "__reflection__", "entries"
+    ),
     "/descriptors-fallback.html": REFLECTION_FALLBACK_BOOTSTRAP.replace(
         "__reflection__", "getOwnPropertyDescriptors"
     ),
@@ -777,6 +780,86 @@ class TestPlaidLinkLifecycle(HttpCase):
             "boxed strings expose indices and an empty object has no keys");
         expectTypeError(() => Object.keys(null), "null has no object keys");
         expectTypeError(() => Object.keys(undefined), "undefined has no object keys");
+""",
+        )
+
+    def test_real_sdk_entries_fallback_preserves_own_enumerable_pairs(self):
+        self._assert_single_sdk_fallback(
+            "/entries-fallback.html",
+            r"""
+        const natives = fallback.natives;
+        check(Object.keys === natives.keys
+            && Object.getOwnPropertyDescriptors === natives.descriptors
+            && Object.getOwnPropertyNames === natives.names
+            && Object.getOwnPropertyDescriptor === natives.descriptor
+            && Object.getOwnPropertySymbols === natives.symbols
+            && Object.defineProperty === natives.define
+            && Object.create === natives.create && Object.assign === natives.assign
+            && Array.from === fallback.arrayFrom && Reflect.ownKeys === fallback.ownKeys
+            && Symbol === fallback.symbol,
+            "only entries is replaced amongst native reflection and array helpers");
+        const excluded = () => { throw new Error("excluded getter must not run"); };
+        const source = Object.create(Object.defineProperty({}, "inherited",
+            {enumerable: true, get: excluded}));
+        const sentinel = {fixture: "fabricated-entry"};
+        source[2] = "two";
+        source[1] = "one";
+        source.visible = sentinel;
+        Object.defineProperty(source, "hidden", {get: excluded});
+        Object.defineProperty(source, Symbol("fabricated-entry"),
+            {enumerable: true, get: excluded});
+        const pairs = Object.entries(source);
+        check(JSON.stringify(pairs.map(([key]) => key)) === '["1","2","visible"]'
+            && pairs.length === 3 && pairs[0][1] === "one"
+            && pairs[1][1] === "two" && pairs[2][1] === sentinel
+            && pairs.every(pair => Array.isArray(pair) && pair.length === 2),
+            "own enumerable string pairs retain key order and value identity");
+        pairs[2][1] = "changed pair copy";
+        check(source.visible === sentinel,
+            "replacing a result value does not change the source property");
+        const bare = Object.create(null);
+        bare.__proto__ = sentinel;
+        const barePairs = Object.entries(bare);
+        check(barePairs.length === 1 && barePairs[0][0] === "__proto__"
+            && barePairs[0][1] === sentinel && Object.getPrototypeOf(bare) === null,
+            "an own proto-named entry preserves a null source prototype");
+""",
+        )
+
+    def test_real_sdk_entries_fallback_preserves_coercion_and_getters(self):
+        self._assert_single_sdk_fallback(
+            "/entries-fallback.html",
+            r"""
+        check(JSON.stringify(Object.entries("ab")) === '[["0","a"],["1","b"]]'
+            && JSON.stringify(Object.entries({})) === '[]'
+            && JSON.stringify(Object.entries(3)) === '[]'
+            && JSON.stringify(Object.entries(true)) === '[]',
+            "string indices form pairs and the other fixtures have no entries");
+        expectTypeError(() => Object.entries(null), "null has no entry pairs");
+        expectTypeError(() => Object.entries(undefined), "undefined has no entries");
+        let reads = 0;
+        const changing = {};
+        Object.defineProperty(changing, "first", {enumerable: true, get() {
+            reads++;
+            delete changing.later;
+            changing.added = "outside the initial key snapshot";
+            return "keep";
+        }});
+        changing.later = "omit";
+        check(JSON.stringify(Object.entries(changing)) === '[["first","keep"]]'
+            && reads === 1 && !Object.hasOwn(changing, "later")
+            && changing.added === "outside the initial key snapshot",
+            "getter runs once, omits deleted keys and retains the initial snapshot");
+        const failure = new Error("fabricated entry getter failure");
+        let propagated;
+        try {
+            Object.entries(Object.defineProperty({}, "included",
+                {enumerable: true, get() { throw failure; }}));
+        } catch (error) {
+            propagated = error;
+        }
+        check(propagated === failure,
+            "an included getter propagates its original thrown object");
 """,
         )
 
