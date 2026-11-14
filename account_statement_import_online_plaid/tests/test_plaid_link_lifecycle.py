@@ -201,6 +201,32 @@ class TestPlaidLinkLifecycle(HttpCase):
         ]
         return response
 
+    def test_fixture_delegates_requests_outside_its_owned_routes(self):
+        cases = (
+            (None, "https://cdn.plaid.com/link/2.0.1951/0.js"),
+            (404, "https://secure.plaid.com/link/2.0.1951/0.js"),
+            (404, "https://cdn.plaid.com/link/2.0.1951/unknown.js"),
+            (404, "https://plaid-form.invalid/unknown.html"),
+            (404, "http://sandbox.plaid.com/link/heartbeat"),
+            (404, "https://foreign.invalid/link/heartbeat"),
+            (404, "https://sandbox.plaid.com/link/unknown"),
+        )
+        for status, url in cases:
+            response = {"responseCode": 418, "body": "Framework fallback"}
+            expected = response.copy()
+            with (
+                self.subTest(status=status, url=url),
+                patch.object(self, "_companion_status", status),
+                patch.object(
+                    HttpCase, "fetch_proxy", autospec=True, return_value=response
+                ) as delegate,
+            ):
+                self.assertIs(self.fetch_proxy(url), response)
+                delegate.assert_called_once_with(self, url)
+                self.assertEqual(response, expected)
+                self.assertTrue(self._fixture_requests.empty())
+                self.assertTrue(self._companion_responses.empty())
+
     def _assert_web3_companion_failure(self, status, failure_type):
         self._companion_status = status
         self.browser_js(
