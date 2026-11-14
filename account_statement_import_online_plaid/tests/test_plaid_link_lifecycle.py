@@ -126,6 +126,23 @@ delete Array.from;
 plaidSingleSdkFallback.before = typeof Array.from;
 </script>"""
 
+ITERATOR_FALLBACK_BOOTSTRAP = r"""<script>
+const iteratorOwner = __iterator_owner__;
+const iteratorName = __iterator_name__;
+const nativeIteratorPrototype = Object.getPrototypeOf([][Symbol.iterator]());
+window.plaidSingleSdkFallback = {
+    owner: iteratorOwner, name: iteratorName, native: iteratorOwner[iteratorName],
+    concat: Array.prototype.concat, arrayFrom: Array.from,
+    natives: {keys: Array.prototype.keys, values: Array.prototype.values,
+        iterator: Array.prototype[Symbol.iterator],
+        stringIterator: String.prototype[Symbol.iterator]},
+    iteratorPrototype: nativeIteratorPrototype,
+    iteratorParent: Object.getPrototypeOf(nativeIteratorPrototype),
+};
+delete iteratorOwner[iteratorName];
+plaidSingleSdkFallback.before = typeof iteratorOwner[iteratorName];
+</script>"""
+
 URL_SEARCH_PARAMS_FALLBACK_BOOTSTRAP = r"""<script>
 window.plaidSingleSdkFallback = {
     owner: window, name: "URLSearchParams", native: URLSearchParams,
@@ -194,6 +211,12 @@ SDK_FALLBACK_PAGES = {
     "/array-fallbacks.html": ARRAY_FALLBACK_BOOTSTRAP,
     "/indexof-fallback.html": INDEXOF_FALLBACK_BOOTSTRAP,
     "/arrayfrom-fallback.html": ARRAY_FROM_FALLBACK_BOOTSTRAP,
+    "/array-entries-fallback.html": ITERATOR_FALLBACK_BOOTSTRAP.replace(
+        "__iterator_owner__", "Array.prototype"
+    ).replace("__iterator_name__", '"entries"'),
+    "/string-iterator-fallback.html": ITERATOR_FALLBACK_BOOTSTRAP.replace(
+        "__iterator_owner__", "String.prototype"
+    ).replace("__iterator_name__", "Symbol.iterator"),
     "/urlsearchparams-fallback.html": URL_SEARCH_PARAMS_FALLBACK_BOOTSTRAP,
     "/assign-fallback.html": ASSIGN_FALLBACK_BOOTSTRAP,
     "/weakmap-fallback.html": WEAKMAP_FALLBACK_BOOTSTRAP,
@@ -736,6 +759,120 @@ class TestPlaidLinkLifecycle(HttpCase):
             check(observed === original && steps === 1 && closes === 1,
                 "mapper failure closes once and retains the original error");
         }
+""",
+        )
+
+    def test_real_sdk_array_entries_fallback_preserves_pairs_and_receivers(self):
+        self._assert_single_sdk_fallback(
+            "/array-entries-fallback.html",
+            r"""
+        check(Array.prototype.keys === fallback.natives.keys
+            && Array.prototype.values === fallback.natives.values
+            && Array.prototype[Symbol.iterator] === fallback.natives.iterator
+            && String.prototype[Symbol.iterator] === fallback.natives.stringIterator
+            && Array.from === fallback.arrayFrom
+            && Object.getPrototypeOf(fallback.iteratorPrototype)
+                === fallback.iteratorParent,
+            "only entries changes and native iterator ancestry is preserved");
+        const marker = {fixture: "fabricated-iterator"};
+        const parent = Object.create(Array.prototype);
+        parent[1] = "inherited";
+        const sparse = new Array(3);
+        sparse[0] = marker;
+        Object.setPrototypeOf(sparse, parent);
+        const iterator = sparse.entries();
+        const first = iterator.next(), second = iterator.next();
+        const third = iterator.next();
+        check(!first.done && first.value[0] === 0 && first.value[1] === marker
+            && !second.done && second.value[0] === 1 && second.value[1] === "inherited"
+            && !third.done && third.value[0] === 2 && third.value[1] === undefined
+            && first.value !== second.value && second.value !== third.value
+            && iterator.next().done,
+            "fresh indexed pairs include inherited values and sparse holes");
+        first.value[1] = "changed result";
+        check(sparse[0] === marker, "result pair mutation preserves source identity");
+        const generic = Array.prototype.entries.call({0: "a", length: 2});
+        check(JSON.stringify(generic.next().value) === '[0,"a"]'
+            && generic.next().value[1] === undefined && generic.next().done,
+            "entries accepts an array-like receiver and includes its missing value");
+        check(JSON.stringify(Array.from(Array.prototype.entries.call("ab")))
+            === '[[0,"a"],[1,"b"]]', "entries accepts a string receiver");
+""",
+        )
+
+    def test_real_sdk_array_entries_fallback_tracks_length_and_errors(self):
+        self._assert_single_sdk_fallback(
+            "/array-entries-fallback.html",
+            r"""
+        const growing = [1], live = growing.entries();
+        check(live.next().value[1] === 1, "entries starts with the original value");
+        growing.push(2);
+        check(live.next().value[1] === 2, "entries observes append before exhaustion");
+        check(live.next().done, "entries exhausts at the current length");
+        growing.push(3);
+        check(live.next().done, "an exhausted iterator stays complete after append");
+        const shrinking = [1, 2, 3], shortened = shrinking.entries();
+        shortened.next();
+        shrinking.length = 1;
+        check(shortened.next().done, "entries observes a shorter live length");
+        shrinking.push(4);
+        check(shortened.next().done, "a shortened iterator stays complete");
+        const failure = new Error("fabricated indexed getter failure");
+        const throwing = {length: 1, get 0() { throw failure; }};
+        const getterIterator = Array.prototype.entries.call(throwing);
+        let observed;
+        try {
+            getterIterator.next();
+        } catch (error) {
+            observed = error;
+        }
+        check(observed === failure && getterIterator.next().done,
+            "indexed getter propagates its original error after advancing once");
+        expectTypeError(() => Array.prototype.entries.call(null),
+            "entries refuses null");
+        expectTypeError(() => Array.prototype.entries.call(undefined),
+            "entries refuses undefined");
+        expectTypeError(() => live.next.call({}), "next requires an array iterator");
+        expectTypeError(() => live.next.call(null), "next refuses a null receiver");
+""",
+        )
+
+    def test_real_sdk_string_iterator_preserves_unicode_and_nullish_refusal(self):
+        self._assert_single_sdk_fallback(
+            "/string-iterator-fallback.html",
+            r"""
+        check(Array.prototype.keys === fallback.natives.keys
+            && Array.prototype.values === fallback.natives.values
+            && Array.prototype[Symbol.iterator] === fallback.natives.iterator
+            && Array.from === fallback.arrayFrom
+            && Object.getPrototypeOf(fallback.iteratorPrototype)
+                === fallback.iteratorParent,
+            "array APIs and native iterator ancestry remain unchanged");
+        const iterate = String.prototype[Symbol.iterator];
+        for (const receiver of [null, undefined]) {
+            expectTypeError(() => fallback.native.call(receiver),
+                "native string iterator refuses a nullish receiver");
+            expectTypeError(() => iterate.call(receiver),
+                "fallback string iterator refuses a nullish receiver");
+        }
+        const unicode = "A\u{1F600}\uD800B\uDC00"[Symbol.iterator]();
+        check(JSON.stringify(Array.from(unicode))
+            === JSON.stringify(["A", "\u{1F600}", "\uD800", "B", "\uDC00"])
+            && unicode.next().done && unicode.next().done,
+            "paired and lone surrogates retain their values before finite completion");
+        let conversions = 0;
+        const generic = iterate.call({toString() {
+            conversions++;
+            return "\u{1F600}";
+        }});
+        check(conversions === 1 && generic.next().value === "\u{1F600}"
+            && generic.next().done && conversions === 1,
+            "a generic receiver converts once when the iterator is created");
+        expectTypeError(() => iterate.call(Symbol("fabricated")),
+            "string iterator refuses a Symbol receiver");
+        expectTypeError(() => generic.next.call({}),
+            "next requires a string iterator");
+        expectTypeError(() => generic.next.call(null), "next refuses null");
 """,
         )
 

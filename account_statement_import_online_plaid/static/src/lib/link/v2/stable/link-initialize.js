@@ -290,6 +290,8 @@ var Plaid = (function (t) {
       String,
       "String",
       function (t) {
+        if (null === t || void 0 === t)
+          throw new TypeError("Can't call method on " + t);
         p(this, {type: d, string: a(t), index: 0});
       },
       function next() {
