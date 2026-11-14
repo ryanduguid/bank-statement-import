@@ -276,7 +276,7 @@ class TestPlaidLinkLifecycle(HttpCase):
 (async () => {
     let handler;
     const bodyStyle = document.body.style.cssText;
-    const exits = [];
+    const successes = [], exits = [];
     function expectTypeError(run, label) {
         try {
             run();
@@ -393,6 +393,7 @@ class TestPlaidLinkLifecycle(HttpCase):
 
         handler = Plaid.create({
             env: "sandbox", token: "link-sandbox-fabricated",
+            onSuccess: (...args) => successes.push(args),
             onExit: (...args) => exits.push(args),
         }, {forceDesktop: true});
         const frame = frameFor();
@@ -404,12 +405,13 @@ class TestPlaidLinkLifecycle(HttpCase):
         handler.exit({force: true});
         await take(frame, "exit");
         await emit(frame, "exit", {error: null, metadata: {status: "cancelled"}});
-        check(exits.length === 1 && exits[0][0] === null
+        check(successes.length === 0 && exits.length === 1 && exits[0][0] === null
             && exits[0][1].status === "cancelled" && frame.style.display === "none",
             "normal cancellation preserves the callback payload with fallbacks");
         handler.destroy();
         handler = null;
-        check(!frame.isConnected, "destroy removes the owned frame");
+        check(!frame.isConnected && successes.length === 0,
+            "destroy removes the owned frame without reporting a success");
     } finally {
         if (handler) handler.destroy();
         window.removeEventListener("message", record);
