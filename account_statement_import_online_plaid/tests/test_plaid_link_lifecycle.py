@@ -141,6 +141,18 @@ class TestPlaidLinkLifecycle(HttpCase):
                 content = PLAID_PEER
             elif parsed.path == "/link/v2/stable/link-open.html":
                 content = "<!doctype html><title>Fabricated link-open receipt</title>"
+            elif (
+                parsed.hostname == "cdn.plaid.com"
+                and self._companion_status is not None
+                and parsed.path
+                in {f"/link/2.0.1951/{name}" for name in WEB3_COMPANIONS}
+            ):
+                response_code = self._companion_status
+                content_type = "application/javascript; charset=utf-8"
+                content = "" if response_code == 200 else "/* Missing fixture asset */"
+                self._companion_responses.put(
+                    (url, response_code, content_type, content)
+                )
             else:
                 return super().fetch_proxy(url)
         elif parsed.scheme == "https" and parsed.hostname == "plaid-form.invalid":
@@ -161,15 +173,6 @@ class TestPlaidLinkLifecycle(HttpCase):
                 content_type = "application/javascript; charset=utf-8"
             elif parsed.path == "/submission.html":
                 content = "<!doctype html><title>Fabricated form receipt</title>"
-            elif self._companion_status is not None and parsed.path in {
-                f"/link/2.0.1951/{name}" for name in WEB3_COMPANIONS
-            }:
-                response_code = self._companion_status
-                content_type = "application/javascript; charset=utf-8"
-                content = "" if response_code == 200 else "/* Missing fixture asset */"
-                self._companion_responses.put(
-                    (url, response_code, content_type, content)
-                )
             else:
                 return super().fetch_proxy(url)
         elif (
@@ -207,7 +210,7 @@ class TestPlaidLinkLifecycle(HttpCase):
 (async () => {
     const names = ["0.js", "2.js", "10.js",
         "vendors~LazyLink~web3Bridge.js", "web3Bridge.js"];
-    const urls = names.map(name => new URL("/link/2.0.1951/" + name, location).href);
+    const urls = names.map(name => "https://cdn.plaid.com/link/2.0.1951/" + name);
     const scriptEvents = [], failures = [], unexpected = [];
     const successes = [], exits = [];
     function resource(event) {
@@ -287,7 +290,7 @@ class TestPlaidLinkLifecycle(HttpCase):
             sorted(f"/link/2.0.1951/{name}" for name in WEB3_COMPANIONS),
         )
         for url, code, content_type, body in responses:
-            self.assertEqual(urlparse(url).hostname, "plaid-form.invalid")
+            self.assertEqual(urlparse(url).hostname, "cdn.plaid.com")
             self.assertEqual(code, status)
             self.assertEqual(content_type, "application/javascript; charset=utf-8")
             self.assertEqual(
