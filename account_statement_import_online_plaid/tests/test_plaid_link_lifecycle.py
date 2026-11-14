@@ -1434,6 +1434,159 @@ class TestPlaidLinkLifecycle(HttpCase):
             self.assertEqual(content_type, "application/javascript; charset=utf-8")
             self.assertEqual(content, self._genuine_companions[name])
 
+    def test_real_web3_bridge_refuses_metamask_with_only_coinbase(self):
+        self._assert_real_web3_provider_refusal("wallet_4", True, ["wallet_374"])
+
+    def test_real_web3_bridge_refuses_absent_gamestop(self):
+        self._assert_real_web3_provider_refusal("wallet_232", False, [])
+
+    def _assert_real_web3_provider_refusal(self, wallet_id, coinbase_present, expected):
+        manifest = json.loads(
+            (Path(__file__).parent / "fixtures/plaid_web3_companions.json").read_text()
+        )
+        cache = Path(os.environ["PLAID_TEST_COMPANION_DIR"])
+        self.assertEqual(
+            [asset["name"] for asset in manifest["assets"]], list(WEB3_COMPANIONS)
+        )
+        for asset in manifest["assets"]:
+            content = (cache / asset["name"]).read_bytes()
+            self.assertEqual(len(content), asset["bytes"])
+            self.assertEqual(hashlib.sha256(content).hexdigest(), asset["sha256"])
+            self._genuine_companions[asset["name"]] = content.decode("utf-8")
+        fixture = json.dumps(
+            {"walletId": wallet_id, "coinbase": coinbase_present, "expected": expected}
+        )
+        self.browser_js(
+            "https://plaid-form.invalid/web3.html",
+            BROWSER_HARNESS
+            + "\nconst fixture = "
+            + fixture
+            + ";\n"
+            + r"""
+(async () => {
+    const names = ["0.js", "2.js", "10.js",
+        "vendors~LazyLink~web3Bridge.js", "web3Bridge.js"];
+    const urls = names.map(name => "https://cdn.plaid.com/link/2.0.1951/" + name);
+    const globals = ["ethereum", "solana", "coinbaseWalletExtension", "bitkeep",
+        "gamestop"];
+    const descriptors = globals.map(name =>
+        Object.getOwnPropertyDescriptor(window, name));
+    const scripts = [], failures = [], successes = [], exits = [];
+    const bodyStyle = document.body.style.cssText;
+    let requests = 0;
+    const coinbase = {
+        isCoinbaseWallet: true,
+        request() { requests++; throw new Error("wallet request forbidden"); },
+        enable() { requests++; throw new Error("wallet enable forbidden"); },
+        send() { requests++; throw new Error("wallet send forbidden"); },
+    };
+    function resource(event) {
+        if (event.target instanceof HTMLScriptElement
+            && urls.includes(event.target.src)) {
+            scripts.push({url: event.target.src, type: event.type});
+        }
+    }
+    function rejection(event) { failures.push(event.reason); }
+    function receiptIs(receipt, kind, metadata) {
+        check(receipt.message.action === "plaid_link::web3-message"
+            && receipt.message.message === kind,
+            "genuine companion responds through the configured peer");
+        check(JSON.stringify(receipt.message.metadata) === JSON.stringify(metadata),
+            "genuine companion returns the exact refusal or discovery metadata");
+    }
+    document.addEventListener("load", resource, true);
+    document.addEventListener("error", resource, true);
+    window.addEventListener("unhandledrejection", rejection);
+    let handler, frame;
+    try {
+        for (const name of globals) Object.defineProperty(window, name, {
+            configurable: true, value: undefined,
+        });
+        if (fixture.coinbase) Object.defineProperty(window, "ethereum", {
+            configurable: true, value: {providers: [coinbase]},
+        });
+        handler = Plaid.create({
+            env: "sandbox", token: "link-sandbox-fabricated",
+            onSuccess: (...args) => successes.push(args),
+            onExit: (...args) => exits.push(args),
+        }, {forceDesktop: true, web3ValidChains: ["eip155:1"]});
+        handler.open();
+        frame = frameFor();
+        const config = (await take(frame, "configure")).message.config;
+        check(JSON.stringify(config.detectedWeb3WalletIds)
+            === JSON.stringify(fixture.expected),
+            "ordinary SDK configuration discovers only the fabricated providers");
+        await take(frame, "open");
+        await emit(frame, "web3-message", {message: "START_BRIDGE"});
+        await emit(frame, "web3-message", {message: "REQUEST_PLUGIN_DATA"});
+        receiptIs(await take(frame, "web3-message"), "RESPONSE_PLUGIN_DATA",
+            {installedWalletIds: fixture.expected});
+        for (let attempt = 0; attempt < 2; attempt++) {
+            await emit(frame, "web3-message", {
+                message: "OPEN_BROWSER_PLUGIN",
+                metadata: {walletBrandId: fixture.walletId},
+            });
+            receiptIs(await take(frame, "web3-message"), "PROVIDER_ERROR",
+                {error: "#getProvider did not create a provider"});
+            check(requests === 0 && successes.length === 0 && exits.length === 0,
+                "missing selected wallets never request access or complete Link");
+        }
+        await emit(frame, "web3-message", {message: "REQUEST_PLUGIN_DATA"});
+        receiptIs(await take(frame, "web3-message"), "RESPONSE_PLUGIN_DATA",
+            {installedWalletIds: fixture.expected});
+        check(scripts.length === 5
+            && new Set(scripts.map(event => event.url)).size === 5
+            && scripts.every(event => event.type === "load"),
+            "retry and discovery reuse exactly five genuine companion loads");
+        check(failures.length === 0 && receipts.every(item =>
+            item.source !== frame.contentWindow || item.kind !== "web3-message"),
+            "refusals leave no rejection or extra bridge response");
+        handler.exit({force: true});
+        await take(frame, "exit");
+        await emit(frame, "exit", {error: null, metadata: {status: "cancelled"}});
+        check(successes.length === 0 && exits.length === 1
+            && exits[0][0] === null && exits[0][1].status === "cancelled"
+            && frame.style.display === "none",
+            "ordinary cancellation still reports its exact callback and hides Link");
+    } finally {
+        handler?.destroy();
+        globals.forEach((name, index) => {
+            if (descriptors[index])
+                Object.defineProperty(window, name, descriptors[index]);
+            else delete window[name];
+        });
+        document.removeEventListener("load", resource, true);
+        document.removeEventListener("error", resource, true);
+        window.removeEventListener("unhandledrejection", rejection);
+        window.removeEventListener("message", record);
+        document.body.style.cssText = bodyStyle;
+        for (const script of document.querySelectorAll("script[src]")) {
+            if (urls.includes(script.src)) script.remove();
+        }
+    }
+    check(frame && !frame.isConnected && requests === 0
+        && successes.length === 0 && exits.length === 1 && failures.length === 0,
+        "destroy releases the owned frame without wallet access or extra callbacks");
+    console.log("test successful");
+})().catch(error => console.error(error.stack));
+""",
+            ready="typeof Plaid !== 'undefined' && typeof Plaid.create === 'function'",
+            login="admin",
+            timeout=90,
+        )
+        responses = []
+        while not self._companion_responses.empty():
+            responses.append(self._companion_responses.get())
+        self.assertEqual(
+            sorted(urlparse(url).path for url, *_rest in responses),
+            sorted(f"/link/2.0.1951/{name}" for name in WEB3_COMPANIONS),
+        )
+        for url, code, content_type, content in responses:
+            name = Path(urlparse(url).path).name
+            self.assertEqual(code, 200)
+            self.assertEqual(content_type, "application/javascript; charset=utf-8")
+            self.assertEqual(content, self._genuine_companions[name])
+
     def test_sync_button_links_the_selected_account(self):
         bank = self.env["res.bank"].create(
             {"name": "Plaid UI fixture", "country": self.env.ref("base.us").id}
