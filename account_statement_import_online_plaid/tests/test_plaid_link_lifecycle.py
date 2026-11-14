@@ -97,8 +97,11 @@ WEB3_COMPANIONS = (
 
 
 ARRAY_FALLBACK_BOOTSTRAP = r"""<script>
-window.plaidArrayFallbacks = {native: {}, before: {}};
-for (const name of ["concat", "filter", "map", "reduce"]) {
+// The SDK needs concat to build export keys before it can install polyfills.
+window.plaidArrayFallbacks = {
+    native: {concat: Array.prototype.concat}, before: {},
+};
+for (const name of ["filter", "map", "reduce"]) {
     plaidArrayFallbacks.native[name] = Array.prototype[name];
     delete Array.prototype[name];
     plaidArrayFallbacks.before[name] = typeof Array.prototype[name];
@@ -284,7 +287,7 @@ class TestPlaidLinkLifecycle(HttpCase):
         throw new Error(`${label}: expected TypeError`);
     }
     try {
-        for (const name of ["concat", "filter", "map", "reduce"]) {
+        for (const name of ["filter", "map", "reduce"]) {
             check(typeof plaidArrayFallbacks.native[name] === "function"
                 && plaidArrayFallbacks.before[name] === "undefined",
                 `${name} is genuinely absent before the original SDK loads`);
@@ -294,6 +297,8 @@ class TestPlaidLinkLifecycle(HttpCase):
                 `${name} is restored as a non-enumerable fallback`);
         }
 
+        check(Array.prototype.concat === plaidArrayFallbacks.native.concat,
+            "the SDK preserves the working native concat required at startup");
         const spread = {1: "middle", length: 3,
             [Symbol.isConcatSpreadable]: true};
         const combined = ["head"].concat(spread, "tail");
