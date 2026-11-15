@@ -108,6 +108,24 @@ for (const name of ["filter", "map", "reduce"]) {
 }
 </script>"""
 
+REGEXP_TOSTRING_FALLBACK_BOOTSTRAP = r"""<script>
+window.plaidSingleSdkFallback = {
+    owner: RegExp.prototype, name: "toString", native: RegExp.prototype.toString,
+    concat: Array.prototype.concat, objectToString: Object.prototype.toString,
+    descriptor: Object.getOwnPropertyDescriptor(RegExp.prototype, "toString"),
+    nativeResult: /a/gi.toString(), regexp: RegExp,
+    defineProperty: Object.defineProperty,
+    getOwnPropertyDescriptor: Object.getOwnPropertyDescriptor,
+    exec: RegExp.prototype.exec, test: RegExp.prototype.test,
+    flagsGetter: Object.getOwnPropertyDescriptor(RegExp.prototype, "flags").get,
+};
+plaidSingleSdkFallback.deleted = delete RegExp.prototype.toString;
+plaidSingleSdkFallback.beforeDescriptor =
+    Object.getOwnPropertyDescriptor(RegExp.prototype, "toString");
+plaidSingleSdkFallback.before = typeof RegExp.prototype.toString;
+plaidSingleSdkFallback.inherited = RegExp.prototype.toString;
+</script>"""
+
 INDEXOF_FALLBACK_BOOTSTRAP = r"""<script>
 window.plaidSingleSdkFallback = {
     owner: Array.prototype, name: "indexOf", native: Array.prototype.indexOf,
@@ -210,6 +228,7 @@ plaidCollectionFallback.before = typeof window[collectionName];
 SDK_FALLBACK_PAGES = {
     "/array-fallbacks.html": ARRAY_FALLBACK_BOOTSTRAP,
     "/indexof-fallback.html": INDEXOF_FALLBACK_BOOTSTRAP,
+    "/regexp-tostring-fallback.html": REGEXP_TOSTRING_FALLBACK_BOOTSTRAP,
     "/arrayfrom-fallback.html": ARRAY_FROM_FALLBACK_BOOTSTRAP,
     "/array-entries-fallback.html": ITERATOR_FALLBACK_BOOTSTRAP.replace(
         "__iterator_owner__", "Array.prototype"
@@ -549,7 +568,12 @@ class TestPlaidLinkLifecycle(HttpCase):
         )
         self.assertFalse(self._fixture_requests.empty())
 
-    def _assert_single_sdk_fallback(self, route, assertions):
+    def _assert_single_sdk_fallback(self, route, assertions, *, setup_assertions=None):
+        if setup_assertions is None:
+            setup_assertions = r"""
+        check(typeof fallback.native === "function" && fallback.before === "undefined",
+            "the selected native API is absent before the original SDK loads");
+"""
         self.browser_js(
             "https://plaid-form.invalid" + route,
             BROWSER_HARNESS
@@ -569,12 +593,17 @@ class TestPlaidLinkLifecycle(HttpCase):
     }
     try {
         const fallback = plaidSingleSdkFallback;
-        check(typeof fallback.native === "function" && fallback.before === "undefined",
-            "the selected native API is absent before the original SDK loads");
-        check(typeof fallback.owner[fallback.name] === "function"
-            && fallback.owner[fallback.name] !== fallback.native
-            && !fallback.owner.propertyIsEnumerable(fallback.name),
-            "the original SDK installs a non-enumerable replacement");
+"""
+            + setup_assertions
+            + r"""
+        const installedDescriptor =
+            Object.getOwnPropertyDescriptor(fallback.owner, fallback.name);
+        check(installedDescriptor
+            && typeof installedDescriptor.value === "function"
+            && installedDescriptor.value !== fallback.native
+            && installedDescriptor.enumerable === false,
+            "the original SDK installs a non-enumerable own replacement: "
+                + JSON.stringify(installedDescriptor));
         check(Array.prototype.concat === fallback.concat,
             "the native concat required by SDK startup is preserved");
 """
@@ -625,6 +654,86 @@ class TestPlaidLinkLifecycle(HttpCase):
             timeout=90,
         )
         self.assertFalse(self._fixture_requests.empty())
+
+    def test_real_sdk_regexp_tostring_restores_non_enumerable_own_method(self):
+        self._assert_single_sdk_fallback(
+            "/regexp-tostring-fallback.html",
+            r"""
+        check(RegExp.prototype === fallback.owner
+            && installedDescriptor.writable === true
+            && installedDescriptor.configurable === true,
+            "the restored own method retains standard descriptor attributes");
+        check(/a/gi.toString() === fallback.nativeResult
+            && RegExp.prototype.toString.call({source: "a", flags: "b"}) === "/a/b",
+            "the restored method formats regular expressions and generic receivers");
+        const stringify = RegExp.prototype.toString;
+        check(stringify.call({}) === "/undefined/undefined"
+            && stringify.call({source: "", flags: ""}) === "//",
+            "generic missing and empty fields retain their native string forms");
+        const order = [];
+        const generic = {
+            get source() {
+                order.push("get source");
+                return {toString() { order.push("source text"); return "a"; }};
+            },
+            get flags() {
+                order.push("get flags");
+                return {toString() { order.push("flags text"); return "gi"; }};
+            },
+        };
+        check(stringify.call(generic) === "/a/gi"
+            && JSON.stringify(order) === JSON.stringify([
+                "get source", "source text", "get flags", "flags text",
+            ]), "source and flags are read and converted once in native order");
+        for (const field of ["source", "flags"]) {
+            const failure = new Error(`fabricated ${field} conversion failure`);
+            const receiver = {source: "a", flags: "g"};
+            receiver[field] = {toString() { throw failure; }};
+            let observed;
+            try {
+                stringify.call(receiver);
+            } catch (error) {
+                observed = error;
+            }
+            check(observed === failure,
+                "field conversion preserves its original exception identity");
+        }
+        for (const receiver of [null, undefined, true, 1, "a", Symbol("fabricated")]) {
+            expectTypeError(() => fallback.native.call(receiver),
+                "native RegExp toString refuses primitive receivers");
+            expectTypeError(() => stringify.call(receiver),
+                "restored RegExp toString refuses primitive receivers");
+        }
+        expectTypeError(() => stringify.call({source: Symbol("fabricated"), flags: ""}),
+            "source conversion refuses a Symbol");
+        expectTypeError(
+            () => stringify.call({source: "a", flags: Symbol("fabricated")}),
+            "flags conversion refuses a Symbol");
+""",
+            setup_assertions=r"""
+        const nativeDescriptor = fallback.descriptor;
+        check(typeof fallback.native === "function"
+            && nativeDescriptor && nativeDescriptor.value === fallback.native
+            && nativeDescriptor.enumerable === false
+            && nativeDescriptor.writable === true
+            && nativeDescriptor.configurable === true
+            && fallback.nativeResult === "/a/gi",
+            "the native RegExp toString control is an own non-enumerable method");
+        check(fallback.deleted === true && fallback.beforeDescriptor === undefined
+            && fallback.before === "function"
+            && fallback.inherited === fallback.objectToString,
+            "only RegExp's own toString is deleted, leaving Object's inherited method");
+        check(RegExp === fallback.regexp
+            && Object.prototype.toString === fallback.objectToString
+            && Object.defineProperty === fallback.defineProperty
+            && Object.getOwnPropertyDescriptor === fallback.getOwnPropertyDescriptor
+            && RegExp.prototype.exec === fallback.exec
+            && RegExp.prototype.test === fallback.test
+            && Object.getOwnPropertyDescriptor(RegExp.prototype, "flags").get
+                === fallback.flagsGetter,
+            "native reflection, tagging, RegExp execution and flags are preserved");
+""",
+        )
 
     def test_real_sdk_indexof_fallback_preserves_search_contracts(self):
         self._assert_single_sdk_fallback(
