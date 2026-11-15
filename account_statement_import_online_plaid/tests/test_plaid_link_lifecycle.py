@@ -706,7 +706,8 @@ class TestPlaidLinkLifecycle(HttpCase):
         }
         expectTypeError(() => stringify.call({source: Symbol("fabricated"), flags: ""}),
             "source conversion refuses a Symbol");
-        expectTypeError(() => stringify.call({source: "a", flags: Symbol("fabricated")}),
+        expectTypeError(
+            () => stringify.call({source: "a", flags: Symbol("fabricated")}),
             "flags conversion refuses a Symbol");
 """,
             setup_assertions=r"""
