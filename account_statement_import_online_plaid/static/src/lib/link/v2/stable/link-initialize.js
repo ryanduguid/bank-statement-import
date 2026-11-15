@@ -4962,8 +4962,46 @@ var Plaid = (function (t) {
             : ne(t, i, o)
         );
       },
+      toNativePropertyDescriptor = function (descriptor) {
+        _(descriptor);
+        var record = w(null);
+        H(["enumerable", "configurable", "value", "writable", "get", "set"], function (key) {
+          if (key in descriptor) {
+            var value = descriptor[key];
+            if (key === "get" || key === "set") {
+              if (value !== void 0 && !o(19)(value))
+                throw new Z("Accessor must be callable");
+              record[key] = value;
+            } else {
+              record[key] =
+                key === "enumerable" || key === "configurable" || key === "writable"
+                  ? !!value
+                  : value;
+            }
+          }
+        });
+        if ((h(record, "get") || h(record, "set")) &&
+            (h(record, "value") || h(record, "writable")))
+          throw new Z("Invalid property descriptor");
+        return record;
+      },
+      defineNativeProperties = function (target, properties) {
+        var source = o(49)(properties),
+          keys = o(244)(source),
+          records = [];
+        H(keys, function (key) {
+          var descriptor = te(source, key);
+          if (descriptor && descriptor.enumerable)
+            ie(records, [key, toNativePropertyDescriptor(source[key])]);
+        });
+        H(records, function (record) {
+          ne(target, record[0], record[1]);
+        });
+        return target;
+      },
       de = function defineProperties(t, r) {
         _(t);
+        if (p && d) return defineNativeProperties(t, r);
         var o = g(r),
           i = S(o).concat($getOwnPropertySymbols(o));
         return (

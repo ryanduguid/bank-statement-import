@@ -197,6 +197,7 @@ REFLECTION_FALLBACK_BOOTSTRAP = r"""<script>
 const reflectionName = "__reflection__";
 window.plaidSingleSdkFallback = {
     owner: Object, name: reflectionName, native: Object[reflectionName],
+    nativeDescriptor: Object.getOwnPropertyDescriptor(Object, reflectionName),
     concat: Array.prototype.concat, arrayFrom: Array.from, ownKeys: Reflect.ownKeys,
     symbol: Symbol,
     natives: {keys: Object.keys, descriptors: Object.getOwnPropertyDescriptors,
@@ -204,7 +205,15 @@ window.plaidSingleSdkFallback = {
         symbols: Object.getOwnPropertySymbols, define: Object.defineProperty,
         create: Object.create, assign: Object.assign},
 };
-delete Object[reflectionName];
+if (reflectionName === "defineProperties") {
+    const descriptorProbe = {};
+    Object.defineProperty(descriptorProbe, "value", {get() { return 7; }});
+    plaidSingleSdkFallback.descriptorSupport = descriptorProbe.value;
+    plaidSingleSdkFallback.prototypeValue = Object.defineProperty(
+        function () {}, "prototype", {value: 42, writable: false}
+    ).prototype;
+}
+plaidSingleSdkFallback.deleted = delete Object[reflectionName];
 plaidSingleSdkFallback.before = typeof Object[reflectionName];
 </script>"""
 
@@ -247,6 +256,9 @@ SDK_FALLBACK_PAGES = {
     ),
     "/descriptors-fallback.html": REFLECTION_FALLBACK_BOOTSTRAP.replace(
         "__reflection__", "getOwnPropertyDescriptors"
+    ),
+    "/define-properties-fallback.html": REFLECTION_FALLBACK_BOOTSTRAP.replace(
+        "__reflection__", "defineProperties"
     ),
     "/map-fallback.html": COLLECTION_FALLBACK_BOOTSTRAP.replace(
         "__collection__", "Map"
@@ -1179,6 +1191,194 @@ class TestPlaidLinkLifecycle(HttpCase):
             "null descriptors");
         expectTypeError(() => Object.getOwnPropertyDescriptors(undefined),
             "undefined descriptors");
+""",
+        )
+
+    def test_real_sdk_define_properties_preserves_descriptor_collection_contracts(self):
+        self._assert_single_sdk_fallback(
+            "/define-properties-fallback.html",
+            r"""
+        check(installedDescriptor.writable && installedDescriptor.configurable,
+            "the replacement has standard writable and configurable flags");
+        let reads = 0, writes = 0;
+        const getter = () => { reads++; throw new Error("getter must not run"); };
+        const setter = () => { writes++; throw new Error("setter must not run"); };
+        const symbol = Symbol("fabricated-definition"), sentinel = {fixture: "value"};
+        const descriptors = Object.create({inherited: {value: "omit"}});
+        descriptors.visible = {value: sentinel, writable: true,
+            enumerable: true, configurable: true};
+        descriptors.hidden = {value: 7};
+        descriptors.accessor = {get: getter, set: setter,
+            enumerable: true, configurable: true};
+        descriptors[symbol] = {value: sentinel, enumerable: true};
+        Object.defineProperty(descriptors, "ignored", {
+            get() { throw new Error("hidden descriptor entry must not be read"); },
+        });
+        Object.defineProperty(descriptors, "__proto__", {
+            value: {value: sentinel, enumerable: true}, enumerable: true,
+        });
+        const target = {}, result = Object.defineProperties(target, descriptors);
+        check(result === target && Object.getPrototypeOf(target) === Object.prototype,
+            "the original target and its prototype are preserved");
+        check(!Object.hasOwn(target, "inherited") && !Object.hasOwn(target, "ignored"),
+            "inherited and non-enumerable descriptor entries are omitted");
+        check(JSON.stringify(Object.keys(target)) ===
+                '["visible","accessor","__proto__"]',
+            "own enumerable string descriptors apply: "
+                + JSON.stringify(Object.keys(target)));
+        check(Object.getOwnPropertySymbols(target).length === 1
+            && Object.getOwnPropertySymbols(target)[0] === symbol,
+            "own enumerable symbol descriptors apply: "
+                + Object.getOwnPropertySymbols(target).length);
+        const defined = Object.getOwnPropertyDescriptors(target);
+        check(defined.visible.value === sentinel && defined.visible.writable
+            && defined.visible.enumerable && defined.visible.configurable
+            && JSON.stringify(defined.hidden) ===
+                '{"value":7,"writable":false,"enumerable":false,"configurable":false}'
+            && defined[symbol].value === sentinel && defined[symbol].enumerable
+            && !defined[symbol].writable && !defined[symbol].configurable
+            && Object.hasOwn(target, "__proto__")
+            && defined.__proto__.value === sentinel,
+            "data descriptor values, defaults, symbol and proto-named keys are exact");
+        check(defined.accessor.get === getter && defined.accessor.set === setter
+            && defined.accessor.enumerable && defined.accessor.configurable
+            && !Object.hasOwn(defined.accessor, "value")
+            && !Object.hasOwn(defined.accessor, "writable")
+            && reads === 0 && writes === 0,
+            "accessors retain identity without being invoked");
+        const invalid = {};
+        expectTypeError(() => Object.defineProperties(invalid, {
+            first: {value: "must not be installed"}, later: {get: 1},
+        }), "invalid later descriptor");
+        check(Reflect.ownKeys(invalid).length === 0,
+            "all descriptors are validated before any target property is installed");
+        for (const descriptor of [1, null, undefined, {get: getter, value: 1}]) {
+            const refused = {};
+            expectTypeError(() => Object.defineProperties(refused, {
+                first: {value: 1}, invalid: descriptor,
+            }), "invalid or mixed descriptor");
+            check(Reflect.ownKeys(refused).length === 0,
+                "invalid descriptor collections cannot partially define the target");
+        }
+        const failure = new Error("fabricated descriptor getter failure");
+        const untouched = {};
+        let propagated;
+        try {
+            Object.defineProperties(untouched, {
+                first: {value: 1}, get later() { throw failure; },
+            });
+        } catch (error) {
+            propagated = error;
+        }
+        check(propagated === failure && Reflect.ownKeys(untouched).length === 0,
+            "a later descriptor getter preserves its error and the untouched target");
+        const conflict = Object.defineProperty({}, "locked", {value: 1});
+        expectTypeError(() => Object.defineProperties(conflict, {
+            first: {value: 2}, locked: {value: 3},
+        }), "later target definition conflict");
+        check(conflict.first === 2 && conflict.locked === 1,
+            "definition errors retain already installed earlier properties");
+        const order = [], orderedTarget = {};
+        let valueReads = 0;
+        const inheritedData = {
+            get enumerable() { order.push("enumerable"); return true; },
+            get configurable() { order.push("configurable"); return true; },
+            get value() {
+                order.push("value");
+                if (++valueReads !== 1) throw new Error("descriptor value read twice");
+                return sentinel;
+            },
+            get writable() { order.push("writable"); return true; },
+        };
+        Object.defineProperties(orderedTarget, {data: Object.create(inheritedData)});
+        check(orderedTarget.data === sentinel && valueReads === 1
+            && JSON.stringify(order) ===
+                '["enumerable","configurable","value","writable"]',
+            "inherited descriptor attributes are read once in standard order");
+        order.length = 0;
+        Object.defineProperties(orderedTarget, {accessor: Object.create({
+            get enumerable() { order.push("enumerable"); return true; },
+            get configurable() { order.push("configurable"); return true; },
+            get get() { order.push("get"); return getter; },
+            get set() { order.push("set"); return setter; },
+        })});
+        check(JSON.stringify(order) === '["enumerable","configurable","get","set"]'
+            && Object.getOwnPropertyDescriptor(
+                orderedTarget, "accessor").get === getter,
+            "accessor attributes retain inherited lookup and conversion order");
+        Object.defineProperties(orderedTarget, {data: {writable: false}, accessor: {}});
+        let retained = Object.getOwnPropertyDescriptors(orderedTarget);
+        check(retained.data.value === sentinel && !retained.data.writable
+            && retained.data.enumerable && retained.data.configurable
+            && retained.accessor.get === getter && retained.accessor.set === setter
+            && retained.accessor.enumerable && retained.accessor.configurable,
+            "partial and empty descriptors preserve omitted existing attributes");
+        Object.defineProperties(orderedTarget, {data: {}, accessor: {get: undefined}});
+        retained = Object.getOwnPropertyDescriptors(orderedTarget);
+        check(retained.data.value === sentinel && !retained.data.writable
+            && retained.data.enumerable && retained.data.configurable
+            && retained.accessor.get === undefined && retained.accessor.set === setter
+            && retained.accessor.enumerable && retained.accessor.configurable,
+            "an explicit undefined getter differs from an omitted getter");
+        const changing = {};
+        Object.defineProperty(changing, "first", {
+            enumerable: true,
+            get() {
+                Object.defineProperty(changing, "later", {enumerable: true});
+                delete changing.deleted;
+                changing.added = {value: "outside initial snapshot"};
+                return {value: 1};
+            },
+        });
+        Object.defineProperty(changing, "later", {
+            value: {value: 2}, configurable: true,
+        });
+        changing.deleted = {value: 3};
+        const changed = Object.defineProperties({}, changing);
+        check(changed.first === 1 && changed.later === 2
+            && !Object.hasOwn(changed, "added") && !Object.hasOwn(changed, "deleted"),
+            "initial own keys are retained with each entry's current enumerability");
+        let coercions = 0, setReads = 0;
+        const invalidGetter = {toString() { coercions++; throw failure; }};
+        expectTypeError(() => Object.defineProperties({}, {invalid: {
+            get: invalidGetter,
+            get set() { setReads++; return setter; },
+        }}), "invalid accessor before later attribute lookup");
+        check(coercions === 0 && setReads === 0,
+            "invalid accessors neither coerce values nor read later attributes");
+        expectTypeError(() => Object.defineProperties({}, {invalid: {
+            get: getter, set: invalidGetter,
+        }}), "invalid setter without coercion");
+        check(coercions === 0, "invalid setter objects are not coerced to text");
+        const empty = {};
+        check(Object.defineProperties(empty, {}) === empty
+            && Reflect.ownKeys(empty).length === 0,
+            "an empty descriptor collection returns the original target");
+        expectTypeError(() => Object.defineProperties(1, {}), "primitive target");
+        expectTypeError(() => Object.defineProperties({}, null), "null descriptors");
+        expectTypeError(() => Object.defineProperties({}, undefined),
+            "undefined descriptors");
+""",
+            setup_assertions=r"""
+        const natives = fallback.natives;
+        check(typeof fallback.native === "function" && fallback.before === "undefined"
+            && fallback.deleted === true && fallback.descriptorSupport === 7
+            && fallback.prototypeValue === 42
+            && fallback.nativeDescriptor.value === fallback.native
+            && fallback.nativeDescriptor.writable
+            && !fallback.nativeDescriptor.enumerable
+            && fallback.nativeDescriptor.configurable,
+            "only defineProperties is removed with native descriptor probes intact");
+        check(Object.keys === natives.keys
+            && Object.getOwnPropertyDescriptors === natives.descriptors
+            && Object.getOwnPropertyNames === natives.names
+            && Object.getOwnPropertyDescriptor === natives.descriptor
+            && Object.getOwnPropertySymbols === natives.symbols
+            && Object.defineProperty === natives.define
+            && Object.create === natives.create && Object.assign === natives.assign
+            && Array.from === fallback.arrayFrom && Reflect.ownKeys === fallback.ownKeys
+            && Symbol === fallback.symbol,
+            "native definition, reflection and enumeration helpers are preserved");
 """,
         )
 
