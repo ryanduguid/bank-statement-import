@@ -666,6 +666,48 @@ class TestPlaidLinkLifecycle(HttpCase):
         check(/a/gi.toString() === fallback.nativeResult
             && RegExp.prototype.toString.call({source: "a", flags: "b"}) === "/a/b",
             "the restored method formats regular expressions and generic receivers");
+        const stringify = RegExp.prototype.toString;
+        check(stringify.call({}) === "/undefined/undefined"
+            && stringify.call({source: "", flags: ""}) === "//",
+            "generic missing and empty fields retain their native string forms");
+        const order = [];
+        const generic = {
+            get source() {
+                order.push("get source");
+                return {toString() { order.push("source text"); return "a"; }};
+            },
+            get flags() {
+                order.push("get flags");
+                return {toString() { order.push("flags text"); return "gi"; }};
+            },
+        };
+        check(stringify.call(generic) === "/a/gi"
+            && JSON.stringify(order) === JSON.stringify([
+                "get source", "source text", "get flags", "flags text",
+            ]), "source and flags are read and converted once in native order");
+        for (const field of ["source", "flags"]) {
+            const failure = new Error(`fabricated ${field} conversion failure`);
+            const receiver = {source: "a", flags: "g"};
+            receiver[field] = {toString() { throw failure; }};
+            let observed;
+            try {
+                stringify.call(receiver);
+            } catch (error) {
+                observed = error;
+            }
+            check(observed === failure,
+                "field conversion preserves its original exception identity");
+        }
+        for (const receiver of [null, undefined, true, 1, "a", Symbol("fabricated")]) {
+            expectTypeError(() => fallback.native.call(receiver),
+                "native RegExp toString refuses primitive receivers");
+            expectTypeError(() => stringify.call(receiver),
+                "restored RegExp toString refuses primitive receivers");
+        }
+        expectTypeError(() => stringify.call({source: Symbol("fabricated"), flags: ""}),
+            "source conversion refuses a Symbol");
+        expectTypeError(() => stringify.call({source: "a", flags: Symbol("fabricated")}),
+            "flags conversion refuses a Symbol");
 """,
             setup_assertions=r"""
         const nativeDescriptor = fallback.descriptor;

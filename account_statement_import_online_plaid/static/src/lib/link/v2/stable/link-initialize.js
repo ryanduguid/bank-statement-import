@@ -920,7 +920,7 @@ var Plaid = (function (t) {
           var t = u(this);
           return "/" + c(t.source) + "/" + c(d(t));
         },
-        {unsafe: !0}
+        {unsafe: Object.prototype.hasOwnProperty.call(v, p)}
       );
   },
   function (t, r, o) {
