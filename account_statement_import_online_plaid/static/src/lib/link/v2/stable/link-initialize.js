@@ -5146,6 +5146,7 @@ var Plaid = (function (t) {
       c = o(32),
       l = o(105),
       d = o(253),
+      h = o(43),
       p = l("string-to-symbol-registry"),
       v = l("symbol-to-string-registry");
     i(
@@ -5155,7 +5156,16 @@ var Plaid = (function (t) {
           var r = c(t);
           if (u(p, r)) return p[r];
           var o = a("Symbol")(r);
-          return (p[r] = o), (v[o] = r), o;
+          return (
+            h.f(p, r, {
+              value: o,
+              enumerable: !0,
+              configurable: !0,
+              writable: !0,
+            }),
+            (v[o] = r),
+            o
+          );
         },
       }
     );
@@ -5165,7 +5175,6 @@ var Plaid = (function (t) {
     var i = o(5),
       a = o(31),
       u = o(135),
-      c = o(110),
       l = o(105),
       d = o(253),
       p = l("symbol-to-string-registry");
@@ -5173,7 +5182,7 @@ var Plaid = (function (t) {
       {target: "Symbol", stat: !0, forced: !d},
       {
         keyFor: function keyFor(t) {
-          if (!u(t)) throw new TypeError(c(t) + " is not a symbol");
+          if (!u(t)) throw new TypeError("Argument is not a symbol");
           if (a(p, t)) return p[t];
         },
       }

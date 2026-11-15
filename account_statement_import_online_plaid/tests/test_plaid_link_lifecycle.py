@@ -217,6 +217,32 @@ plaidSingleSdkFallback.deleted = delete Object[reflectionName];
 plaidSingleSdkFallback.before = typeof Object[reflectionName];
 </script>"""
 
+SYMBOL_REGISTRY_FALLBACK_BOOTSTRAP = r"""<script>
+window.plaidSingleSdkFallback = {
+    owner: Symbol, name: "for", native: Symbol.for, nativeKeyFor: Symbol.keyFor,
+    concat: Array.prototype.concat, symbol: Symbol, prototype: Symbol.prototype,
+    forDescriptor: Object.getOwnPropertyDescriptor(Symbol, "for"),
+    keyForDescriptor: Object.getOwnPropertyDescriptor(Symbol, "keyFor"),
+    wellKnown: Object.getOwnPropertyNames(Symbol)
+        .filter((name) => typeof Symbol[name] === "symbol")
+        .map((name) => [name, Symbol[name]]),
+    natives: {Map, Set, WeakMap, WeakSet, Promise, URL, URLSearchParams,
+        Request, fetch, Headers},
+    arrays: {from: Array.from, concat: Array.prototype.concat,
+        indexOf: Array.prototype.indexOf, map: Array.prototype.map,
+        filter: Array.prototype.filter, reduce: Array.prototype.reduce},
+    objects: {assign: Object.assign, keys: Object.keys, create: Object.create,
+        symbols: Object.getOwnPropertySymbols, names: Object.getOwnPropertyNames,
+        descriptors: Object.getOwnPropertyDescriptors,
+        descriptor: Object.getOwnPropertyDescriptor, define: Object.defineProperty,
+        defineMany: Object.defineProperties, ownKeys: Reflect.ownKeys},
+};
+plaidSingleSdkFallback.deletedFor = delete Symbol.for;
+plaidSingleSdkFallback.deletedKeyFor = delete Symbol.keyFor;
+plaidSingleSdkFallback.before = typeof Symbol.for;
+plaidSingleSdkFallback.keyForBefore = typeof Symbol.keyFor;
+</script>"""
+
 COLLECTION_FALLBACK_BOOTSTRAP = r"""<script>
 const collectionName = "__collection__";
 window.plaidCollectionFallback = {
@@ -260,6 +286,7 @@ SDK_FALLBACK_PAGES = {
     "/define-properties-fallback.html": REFLECTION_FALLBACK_BOOTSTRAP.replace(
         "__reflection__", "defineProperties"
     ),
+    "/symbol-registry-fallback.html": SYMBOL_REGISTRY_FALLBACK_BOOTSTRAP,
     "/map-fallback.html": COLLECTION_FALLBACK_BOOTSTRAP.replace(
         "__collection__", "Map"
     ),
@@ -666,6 +693,145 @@ class TestPlaidLinkLifecycle(HttpCase):
             timeout=90,
         )
         self.assertFalse(self._fixture_requests.empty())
+
+    def _assert_symbol_registry_fallback(self, assertions):
+        self._assert_single_sdk_fallback(
+            "/symbol-registry-fallback.html",
+            r"""
+        const reverseDescriptor = Object.getOwnPropertyDescriptor(Symbol, "keyFor");
+        check(installedDescriptor.writable && installedDescriptor.configurable
+            && reverseDescriptor && typeof reverseDescriptor.value === "function"
+            && reverseDescriptor.value !== fallback.nativeKeyFor
+            && !reverseDescriptor.enumerable
+            && reverseDescriptor.writable && reverseDescriptor.configurable,
+            "both registry replacements retain standard own descriptors");
+        check(Symbol === fallback.symbol && Symbol.prototype === fallback.prototype
+            && fallback.wellKnown.every(([name, value]) => Symbol[name] === value),
+            "the native Symbol constructor, prototype and well-known symbols remain");
+        check(Object.entries(fallback.natives)
+            .every(([name, value]) => window[name] === value)
+            && Array.from === fallback.arrays.from
+            && ["concat", "indexOf", "map", "filter", "reduce"]
+                .every((name) => Array.prototype[name] === fallback.arrays[name]),
+            "native collections, URL, requests, promises and array methods remain");
+        const objects = fallback.objects;
+        check(Object.assign === objects.assign && Object.keys === objects.keys
+            && Object.create === objects.create
+            && Object.getOwnPropertySymbols === objects.symbols
+            && Object.getOwnPropertyNames === objects.names
+            && Object.getOwnPropertyDescriptors === objects.descriptors
+            && Object.getOwnPropertyDescriptor === objects.descriptor
+            && Object.defineProperty === objects.define
+            && Object.defineProperties === objects.defineMany
+            && Reflect.ownKeys === objects.ownKeys,
+            "native reflection and property definition helpers remain");
+"""
+            + assertions,
+            setup_assertions=r"""
+        check(typeof fallback.native === "function"
+            && typeof fallback.nativeKeyFor === "function"
+            && fallback.deletedFor && fallback.deletedKeyFor
+            && fallback.before === "undefined"
+            && fallback.keyForBefore === "undefined",
+            "both native registry methods alone are removed before SDK startup");
+        for (const [descriptor, native] of [
+            [fallback.forDescriptor, fallback.native],
+            [fallback.keyForDescriptor, fallback.nativeKeyFor],
+        ]) {
+            check(descriptor && descriptor.value === native && !descriptor.enumerable
+                && descriptor.writable && descriptor.configurable,
+                "the native registry controls have standard own descriptors");
+        }
+""",
+        )
+
+    def test_real_sdk_symbol_registry_preserves_reserved_keys_and_conversion(self):
+        self._assert_symbol_registry_fallback(
+            r"""
+        const registry = Symbol.for, reverse = Symbol.keyFor;
+        const seen = [];
+        for (const key of ["fabricated-registry", "", "constructor", "toString",
+            "__proto__", "fabricated-\u{1f680}-registry"]) {
+            const value = registry(key);
+            check(typeof value === "symbol" && value === registry(key),
+                `repeated registry keys retain symbol identity: ${key}`);
+            check(reverse(value) === key && value.description === key,
+                "registered native symbols retain their exact key and description");
+            check(!seen.includes(value),
+                "different registry keys have distinct symbols");
+            seen.push(value);
+            const record = {[value]: "fabricated-value"};
+            check(Object.keys(record).length === 0
+                && Object.getOwnPropertySymbols(record)[0] === value
+                && record[value] === "fabricated-value",
+                "registered results are real native symbol property keys");
+        }
+        let conversions = 0;
+        const key = {[Symbol.toPrimitive](hint) {
+            check(hint === "string", "registry key conversion uses the string hint");
+            conversions++;
+            return "fabricated-converted-key";
+        }};
+        check(registry(key) === registry("fabricated-converted-key")
+            && conversions === 1,
+            "registry keys are converted once before lookup");
+        for (const value of [17, null, undefined, true]) {
+            check(registry(value) === registry(String(value)),
+                "equivalent primitive and string keys share an entry");
+        }
+        check(registry() === registry("undefined"),
+            "an omitted registry key uses the undefined string");
+        const failure = new Error("fabricated key conversion failure");
+        let observed;
+        try {
+            registry({toString() { throw failure; }});
+        } catch (error) {
+            observed = error;
+        }
+        check(observed === failure, "key conversion preserves its original error");
+        expectTypeError(() => registry(Symbol("fabricated-local")),
+            "a Symbol cannot be implicitly converted to a registry key");
+        check(reverse(Symbol("fabricated-registry")) === undefined
+            && fallback.wellKnown.every(([, value]) => reverse(value) === undefined),
+            "local and well-known native symbols are not registered by description");
+"""
+        )
+
+    def test_real_sdk_symbol_keyfor_rejects_non_symbols_without_coercion(self):
+        self._assert_symbol_registry_fallback(
+            r"""
+        for (const value of [null, undefined, true, 17, "fabricated", 1n,
+            {}, Object(Symbol("fabricated-boxed"))]) {
+            expectTypeError(() => fallback.nativeKeyFor(value),
+                "the native registry refuses non-symbol arguments");
+            expectTypeError(() => Symbol.keyFor(value),
+                "the fallback registry refuses non-symbol arguments");
+        }
+        const failure = new Error("fabricated unexpected coercion");
+        let strings = 0, primitives = 0;
+        const invalid = {toString() { strings++; throw failure; }};
+        expectTypeError(() => fallback.nativeKeyFor(invalid),
+            "the native registry rejects objects without string conversion");
+        check(strings === 0, "the native keyFor control does not coerce objects");
+        let observed;
+        try {
+            Symbol.keyFor(invalid);
+        } catch (error) {
+            observed = error;
+        }
+        check(observed instanceof TypeError && strings === 0,
+            `invalid objects are refused without string conversion: ${strings}`);
+        const primitive = {[Symbol.toPrimitive]() { primitives++; throw failure; }};
+        expectTypeError(() => Symbol.keyFor(primitive),
+            "invalid arguments do not invoke Symbol.toPrimitive");
+        check(primitives === 0,
+            "no primitive conversion runs for invalid keyFor input");
+        const registered = Symbol.for("fabricated-reverse-key");
+        check(Symbol.keyFor(registered) === "fabricated-reverse-key"
+            && Symbol.keyFor(Symbol("fabricated-reverse-key")) === undefined,
+            "registered and local native symbols remain distinguishable");
+"""
+        )
 
     def test_real_sdk_regexp_tostring_restores_non_enumerable_own_method(self):
         self._assert_single_sdk_fallback(
