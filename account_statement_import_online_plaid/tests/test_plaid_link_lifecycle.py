@@ -197,6 +197,7 @@ REFLECTION_FALLBACK_BOOTSTRAP = r"""<script>
 const reflectionName = "__reflection__";
 window.plaidSingleSdkFallback = {
     owner: Object, name: reflectionName, native: Object[reflectionName],
+    nativeDescriptor: Object.getOwnPropertyDescriptor(Object, reflectionName),
     concat: Array.prototype.concat, arrayFrom: Array.from, ownKeys: Reflect.ownKeys,
     symbol: Symbol,
     natives: {keys: Object.keys, descriptors: Object.getOwnPropertyDescriptors,
@@ -204,7 +205,15 @@ window.plaidSingleSdkFallback = {
         symbols: Object.getOwnPropertySymbols, define: Object.defineProperty,
         create: Object.create, assign: Object.assign},
 };
-delete Object[reflectionName];
+if (reflectionName === "defineProperties") {
+    const descriptorProbe = {};
+    Object.defineProperty(descriptorProbe, "value", {get() { return 7; }});
+    plaidSingleSdkFallback.descriptorSupport = descriptorProbe.value;
+    plaidSingleSdkFallback.prototypeValue = Object.defineProperty(
+        function () {}, "prototype", {value: 42, writable: false}
+    ).prototype;
+}
+plaidSingleSdkFallback.deleted = delete Object[reflectionName];
 plaidSingleSdkFallback.before = typeof Object[reflectionName];
 </script>"""
 
@@ -247,6 +256,9 @@ SDK_FALLBACK_PAGES = {
     ),
     "/descriptors-fallback.html": REFLECTION_FALLBACK_BOOTSTRAP.replace(
         "__reflection__", "getOwnPropertyDescriptors"
+    ),
+    "/define-properties-fallback.html": REFLECTION_FALLBACK_BOOTSTRAP.replace(
+        "__reflection__", "defineProperties"
     ),
     "/map-fallback.html": COLLECTION_FALLBACK_BOOTSTRAP.replace(
         "__collection__", "Map"
@@ -1179,6 +1191,109 @@ class TestPlaidLinkLifecycle(HttpCase):
             "null descriptors");
         expectTypeError(() => Object.getOwnPropertyDescriptors(undefined),
             "undefined descriptors");
+""",
+        )
+
+    def test_real_sdk_define_properties_preserves_descriptor_collection_contracts(self):
+        self._assert_single_sdk_fallback(
+            "/define-properties-fallback.html",
+            r"""
+        check(installedDescriptor.writable && installedDescriptor.configurable,
+            "the replacement has standard writable and configurable flags");
+        let reads = 0, writes = 0;
+        const getter = () => { reads++; throw new Error("getter must not run"); };
+        const setter = () => { writes++; throw new Error("setter must not run"); };
+        const symbol = Symbol("fabricated-definition"), sentinel = {fixture: "value"};
+        const descriptors = Object.create({inherited: {value: "omit"}});
+        descriptors.visible = {value: sentinel, writable: true,
+            enumerable: true, configurable: true};
+        descriptors.hidden = {value: 7};
+        descriptors.accessor = {get: getter, set: setter,
+            enumerable: true, configurable: true};
+        descriptors[symbol] = {value: sentinel, enumerable: true};
+        Object.defineProperty(descriptors, "ignored", {
+            get() { throw new Error("hidden descriptor entry must not be read"); },
+        });
+        Object.defineProperty(descriptors, "__proto__", {
+            value: {value: sentinel, enumerable: true}, enumerable: true,
+        });
+        const target = {}, result = Object.defineProperties(target, descriptors);
+        check(result === target && Object.getPrototypeOf(target) === Object.prototype
+            && !Object.hasOwn(target, "inherited") && !Object.hasOwn(target, "ignored")
+            && JSON.stringify(Object.keys(target)) ===
+                '["visible","accessor","__proto__"]'
+            && Object.getOwnPropertySymbols(target).length === 1
+            && Object.getOwnPropertySymbols(target)[0] === symbol,
+            "all and only own enumerable string and symbol descriptor entries apply");
+        const defined = Object.getOwnPropertyDescriptors(target);
+        check(defined.visible.value === sentinel && defined.visible.writable
+            && defined.visible.enumerable && defined.visible.configurable
+            && JSON.stringify(defined.hidden) ===
+                '{"value":7,"writable":false,"enumerable":false,"configurable":false}'
+            && defined[symbol].value === sentinel && defined[symbol].enumerable
+            && !defined[symbol].writable && !defined[symbol].configurable
+            && Object.hasOwn(target, "__proto__")
+            && defined.__proto__.value === sentinel,
+            "data descriptor values, defaults, symbol and proto-named keys are exact");
+        check(defined.accessor.get === getter && defined.accessor.set === setter
+            && defined.accessor.enumerable && defined.accessor.configurable
+            && !Object.hasOwn(defined.accessor, "value")
+            && !Object.hasOwn(defined.accessor, "writable")
+            && reads === 0 && writes === 0,
+            "accessors retain identity without being invoked");
+        const invalid = {};
+        expectTypeError(() => Object.defineProperties(invalid, {
+            first: {value: "must not be installed"}, later: {get: 1},
+        }), "invalid later descriptor");
+        check(Reflect.ownKeys(invalid).length === 0,
+            "all descriptors are validated before any target property is installed");
+        const failure = new Error("fabricated descriptor getter failure");
+        const untouched = {};
+        let propagated;
+        try {
+            Object.defineProperties(untouched, {
+                first: {value: 1}, get later() { throw failure; },
+            });
+        } catch (error) {
+            propagated = error;
+        }
+        check(propagated === failure && Reflect.ownKeys(untouched).length === 0,
+            "a later descriptor getter preserves its error and the untouched target");
+        const conflict = Object.defineProperty({}, "locked", {value: 1});
+        expectTypeError(() => Object.defineProperties(conflict, {
+            first: {value: 2}, locked: {value: 3},
+        }), "later target definition conflict");
+        check(conflict.first === 2 && conflict.locked === 1,
+            "definition errors retain already installed earlier properties");
+        const empty = {};
+        check(Object.defineProperties(empty, {}) === empty
+            && Reflect.ownKeys(empty).length === 0,
+            "an empty descriptor collection returns the original target");
+        expectTypeError(() => Object.defineProperties(1, {}), "primitive target");
+        expectTypeError(() => Object.defineProperties({}, null), "null descriptors");
+        expectTypeError(() => Object.defineProperties({}, undefined),
+            "undefined descriptors");
+""",
+            setup_assertions=r"""
+        const natives = fallback.natives;
+        check(typeof fallback.native === "function" && fallback.before === "undefined"
+            && fallback.deleted === true && fallback.descriptorSupport === 7
+            && fallback.prototypeValue === 42
+            && fallback.nativeDescriptor.value === fallback.native
+            && fallback.nativeDescriptor.writable
+            && !fallback.nativeDescriptor.enumerable
+            && fallback.nativeDescriptor.configurable,
+            "only defineProperties is removed with native descriptor probes intact");
+        check(Object.keys === natives.keys
+            && Object.getOwnPropertyDescriptors === natives.descriptors
+            && Object.getOwnPropertyNames === natives.names
+            && Object.getOwnPropertyDescriptor === natives.descriptor
+            && Object.getOwnPropertySymbols === natives.symbols
+            && Object.defineProperty === natives.define
+            && Object.create === natives.create && Object.assign === natives.assign
+            && Array.from === fallback.arrayFrom && Reflect.ownKeys === fallback.ownKeys
+            && Symbol === fallback.symbol,
+            "native definition, reflection and enumeration helpers are preserved");
 """,
         )
 
