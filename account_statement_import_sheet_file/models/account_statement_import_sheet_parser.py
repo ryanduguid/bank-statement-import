@@ -555,15 +555,16 @@ class AccountStatementImportSheetParser(models.TransientModel):
         elif isinstance(value, int | float):
             return float(value)
         thousands, decimal = mapping._get_float_separators()
+        # No digits and at most one sign, such as "-" or "$ -", is an empty
+        # amount in some bank exports. Test before dropping the separators the
+        # mapping does not use, so "-," stays malformed for float() to reject.
+        if re.sub(r"[^\d\-+.,']+", "", value) in ("", "-", "+"):
+            return 0.0
         # Remove all characters except digits, thousands separator,
         # decimal separator, and signs
         value = re.sub(
             r"[^\d\-+" + re.escape(thousands) + re.escape(decimal) + "]+", "", value
         )
-        # A single sign represents an empty amount in some bank exports.
-        # Leave other malformed numeric strings for float() to reject.
-        if value in ("", "-", "+"):
-            value = "0"
         value = value.replace(thousands, "")
         float_separator = "."
         if decimal:

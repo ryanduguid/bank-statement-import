@@ -744,6 +744,26 @@ class TestAccountStatementImportSheetFile(Common):
                     with self.assertRaises(ValueError):
                         self.parser._parse_decimal(value, mapping)
 
+    def test_parse_decimal_rejects_separators_the_mapping_does_not_use(self):
+        # Dropping the unused separator must not leave a lone sign read as zero.
+        for thousands, decimal, value in (
+            ("quote", "dot", "-,"),
+            ("comma", "none", "+."),
+        ):
+            mapping = self.sample_statement_map.copy(
+                {"float_thousands_sep": thousands, "float_decimal_sep": decimal}
+            )
+            with self.subTest(value=value, thousands=thousands, decimal=decimal):
+                with self.assertRaises(ValueError):
+                    self.parser._parse_decimal(value, mapping)
+
+    def test_parse_decimal_reads_a_sign_beside_a_currency_as_empty(self):
+        for value in ("$ -", " - "):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    self.parser._parse_decimal(value, self.mock_mapping_comma_dot), 0
+                )
+
     def test_parse_sign_only_amounts_with_and_without_debit_credit_columns(self):
         data = (
             b"Date,Amount,Debit,Credit,Label\n"
