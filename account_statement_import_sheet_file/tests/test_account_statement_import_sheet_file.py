@@ -737,6 +737,39 @@ class TestAccountStatementImportSheetFile(Common):
                 result = self.parser._parse_decimal(value, mock_mapping)
                 self.assertEqual(result, expected, f"Failed for value: {value}")
 
+    def test_parse_decimal_rejects_malformed_signs_and_separators(self):
+        for mapping in (self.mock_mapping_comma_dot, self.mock_mapping_dot_comma):
+            for value in ("--", "++", "-+", "+-", ".", ",", "-.", "+.", "-,", "+,"):
+                with self.subTest(value=value, mapping=mapping):
+                    with self.assertRaises(ValueError):
+                        self.parser._parse_decimal(value, mapping)
+
+    def test_parse_sign_only_amounts_with_and_without_debit_credit_columns(self):
+        data = (
+            b"Date,Amount,Debit,Credit,Label\n"
+            b"09/01/2026,-,,,Empty minus\n"
+            b"09/02/2026,+,,,Empty plus\n"
+            b"09/03/2026,-,12.50,,Debit fallback\n"
+            b"09/04/2026,+,,7.25,Credit fallback\n"
+        )
+        for with_alternatives in (False, True):
+            with self.subTest(with_alternatives=with_alternatives):
+                mapping = self.sample_statement_map.copy(
+                    {
+                        "amount_debit_column": "Debit" if with_alternatives else False,
+                        "amount_credit_column": "Credit"
+                        if with_alternatives
+                        else False,
+                        "original_currency_column": False,
+                        "original_amount_column": False,
+                        "partner_name_column": False,
+                        "bank_account_column": False,
+                    }
+                )
+                lines = self.parser._parse_lines(mapping, data, "USD")
+                expected = [0, 0, 12.5, -7.25] if with_alternatives else [0, 0, 0, 0]
+                self.assertEqual([line["amount"] for line in lines], expected)
+
     def test_decimal_and_float_inputs(self):
         # Test direct Decimal and float inputs
         self.assertEqual(

@@ -560,9 +560,9 @@ class AccountStatementImportSheetParser(models.TransientModel):
         value = re.sub(
             r"[^\d\-+" + re.escape(thousands) + re.escape(decimal) + "]+", "", value
         )
-        # Values without digits (e.g. "-", used in some exports to indicate an empty
-        # amount) are not valid numbers: treat them as zero.
-        if not re.search(r"\d", value):
+        # A single sign represents an empty amount in some bank exports.
+        # Leave other malformed numeric strings for float() to reject.
+        if value in ("", "-", "+"):
             value = "0"
         value = value.replace(thousands, "")
         float_separator = "."
