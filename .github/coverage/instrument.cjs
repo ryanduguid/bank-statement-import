@@ -18,7 +18,6 @@ const inventory = {
   'bank-statement-import': [
     'account_statement_import_online_gocardless/static/src/js/select_bank_widget.esm.js',
     'account_statement_import_online_plaid/static/src/js/plaid_integration.esm.js',
-    'account_statement_import_online_plaid/static/src/lib/link/v2/stable/link-initialize.js',
   ],
 };
 const digest = data => createHash('sha256').update(data).digest('hex');
@@ -40,10 +39,6 @@ function prepare(relative, original) {
     esModules: relative.endsWith('.esm.js'), compact: false, preserveComments: true,
     coverageVariable: '__coverage__', coverageGlobalScope: 'globalThis',
     coverageGlobalScopeFunc: false, produceSourceMap: false,
-    // Odoo 18 rjsmin removes the required space in decimal numeric member access.
-    // Hex integers preserve its semantics through that native asset minifier.
-    generatorOpts: relative.includes('/static/src/lib/')
-      ? { jsescOption: { numbers: 'hexadecimal' } } : {},
   });
   let generated = tool.instrumentSync(source, coverageKey);
   // Receipts and browser snapshots use JSON, which omits undefined locations.
@@ -60,7 +55,7 @@ function prepare(relative, original) {
   return { generated, record: {
     originalSha256: digest(original), sourceSha256: digest(source), coverageKey,
     instrumentedSha256: digest(generated), hash: initial.hash, seed,
-    provenance: relative.includes('/static/src/lib/') ? 'modified vendored SDK; included' : 'owned module',
+    provenance: 'owned module',
   } };
 }
 

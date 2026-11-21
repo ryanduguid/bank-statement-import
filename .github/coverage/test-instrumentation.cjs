@@ -202,14 +202,14 @@ test('CLI round trip preserves paths with spaces, real counters and unloaded ori
   for (const filename of inventory['account-invoicing']) assert(lcov.includes('SF:' + filename));
 });
 
-test('bank inventory measures vendored SDK execution and retains both unloaded modules', t => {
+test('bank inventory measures the Plaid action and retains an unloaded module', t => {
   const data = fixture(t, undefined, 'bank-statement-import');
   const records = instrument('bank-statement-import', data.copy, data.receipts);
   assert.deepEqual(Object.keys(records).sort(), [...inventory['bank-statement-import']].sort());
-  const sdk = inventory['bank-statement-import'].find(filename => filename.includes('/static/src/lib/'));
-  assert.equal(records[sdk].provenance, 'modified vendored SDK; included');
+  const plaid = 'account_statement_import_online_plaid/static/src/js/plaid_integration.esm.js';
+  assert.equal(records[plaid].provenance, 'owned module');
   const context = vm.createContext({});
-  new vm.Script(fs.readFileSync(path.join(data.copy, sdk), 'utf8')).runInContext(context);
+  new vm.Script(fs.readFileSync(path.join(data.copy, plaid), 'utf8')).runInContext(context);
   assert.equal(new vm.Script('branch(true)').runInContext(context), 17);
   const observed = JSON.parse(JSON.stringify(context.__coverage__));
   fs.writeFileSync(path.join(data.sessions, 'observed.json'),
@@ -218,7 +218,7 @@ test('bank inventory measures vendored SDK execution and retains both unloaded m
     data.sessions, path.join(data.root, 'report'));
   assert.deepEqual(result.files().sort(), [...inventory['bank-statement-import']].sort());
   for (const filename of result.files()) {
-    const expected = filename === sdk ? observed[records[sdk].coverageKey] : records[filename].seed;
+    const expected = filename === plaid ? observed[records[plaid].coverageKey] : records[filename].seed;
     for (const field of ['s', 'f', 'b']) assert.deepEqual(result.fileCoverageFor(filename).data[field], expected[field]);
   }
 });
