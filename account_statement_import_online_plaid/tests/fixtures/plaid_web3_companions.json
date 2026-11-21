@@ -1,30 +1,30 @@
 {
-  "base_url": "https://cdn.plaid.com/link/2.0.1951/",
+  "base_url": "https://cdn.plaid.com/link/2.0.3119/",
   "assets": [
     {
-      "name": "0.js",
-      "bytes": 16646,
-      "sha256": "a1757788c8206347b18ee892d1f327ac06c38cf4a6b33900f37ca381ba0417a9"
+      "name": "vendors~chainUtilities~web3Bridge.js",
+      "bytes": 11595,
+      "sha256": "cb77dbb11cf1b2679610140f42ae3664e00ce22e284513771400832a8006e37a"
+    },
+    {
+      "name": "vendors~web3Bridge.js",
+      "bytes": 17697,
+      "sha256": "3a04dbd63fb620f3d45a145d2ff1f0bec5e1e3f1181fdb7e8329e3faea390d07"
     },
     {
       "name": "2.js",
-      "bytes": 1011096,
-      "sha256": "40bb5e1778ad593616b986861d5aedb85b874be9edb83da2cb09742de0162170"
-    },
-    {
-      "name": "10.js",
-      "bytes": 25056,
-      "sha256": "f4029b1eb01cd7041c69ed8a7b986d8d8a3409d1f58636c1ca6d225a7ecadc9f"
-    },
-    {
-      "name": "vendors~LazyLink~web3Bridge.js",
-      "bytes": 12923,
-      "sha256": "ed928af3cb7e87a4a26125726471cb5e6840e1cf9ef7ffd362a62e62bff169f1"
+      "bytes": 29454,
+      "sha256": "230087925560ce45ce820c02a02b3b1256c756acfe0a3321a5f78ecb5b50a414"
     },
     {
       "name": "web3Bridge.js",
-      "bytes": 148905,
-      "sha256": "82309b89d319cade2409989f3a7c2fa8f7f8db4c310a4ee5c7ba708411cb2a33"
+      "bytes": 966,
+      "sha256": "8fcdd8296a18f0c160f4ab193af0ef24f5186a131e28b21b6465b51ff62f79fd"
+    },
+    {
+      "name": "chainUtilities.js",
+      "bytes": 5528,
+      "sha256": "176795bb339e5b52e3b2a45575551c85ebf77914b3d8fbd4f5e08c770363a087"
     }
   ]
 }

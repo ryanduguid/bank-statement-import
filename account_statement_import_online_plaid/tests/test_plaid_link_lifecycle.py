@@ -87,13 +87,23 @@ function frameFor(expectedOrigin = "https://cdn.plaid.com") {
 }
 """
 
+PLAID_BUILD_PATH = "/link/2.0.3119/"
+# The SDK loads the bridge chunks together, then chainUtilities.js.
 WEB3_COMPANIONS = (
-    "0.js",
+    "vendors~chainUtilities~web3Bridge.js",
+    "vendors~web3Bridge.js",
     "2.js",
-    "10.js",
-    "vendors~LazyLink~web3Bridge.js",
     "web3Bridge.js",
+    "chainUtilities.js",
 )
+# A failed bridge chunk stops the loader before it requests chainUtilities.js.
+WEB3_BRIDGE_CHUNKS = WEB3_COMPANIONS[:4]
+
+
+def companion_urls(names):
+    return json.dumps(
+        [f"https://cdn.plaid.com{PLAID_BUILD_PATH}{name}" for name in names]
+    )
 
 
 ARRAY_FALLBACK_BOOTSTRAP = r"""<script>
@@ -349,8 +359,7 @@ class TestPlaidLinkLifecycle(HttpCase):
             elif (
                 parsed.hostname == "cdn.plaid.com"
                 and (self._companion_status is not None or self._genuine_companions)
-                and parsed.path
-                in {f"/link/2.0.1951/{name}" for name in WEB3_COMPANIONS}
+                and parsed.path in {PLAID_BUILD_PATH + name for name in WEB3_COMPANIONS}
             ):
                 response_code = (
                     200 if self._companion_status is None else self._companion_status
@@ -424,9 +433,9 @@ class TestPlaidLinkLifecycle(HttpCase):
 
     def test_fixture_delegates_requests_outside_its_owned_routes(self):
         cases = (
-            (None, "https://cdn.plaid.com/link/2.0.1951/0.js"),
-            (404, "https://secure.plaid.com/link/2.0.1951/0.js"),
-            (404, "https://cdn.plaid.com/link/2.0.1951/unknown.js"),
+            (None, "https://cdn.plaid.com/link/2.0.3119/2.js"),
+            (404, "https://secure.plaid.com/link/2.0.3119/2.js"),
+            (404, "https://cdn.plaid.com/link/2.0.3119/unknown.js"),
             (404, "https://plaid-form.invalid/unknown.html"),
             (404, "http://plaid-form.invalid/form.html"),
             (404, "http://sandbox.plaid.com/link/heartbeat"),
@@ -2071,9 +2080,7 @@ class TestPlaidLinkLifecycle(HttpCase):
             BROWSER_HARNESS
             + r"""
 (async () => {
-    const names = ["0.js", "2.js", "10.js",
-        "vendors~LazyLink~web3Bridge.js", "web3Bridge.js"];
-    const urls = names.map(name => "https://cdn.plaid.com/link/2.0.1951/" + name);
+    const urls = __COMPANION_URLS__;
     const scriptEvents = [], failures = [], unexpected = [];
     const successes = [], exits = [];
     function resource(event) {
@@ -2111,12 +2118,12 @@ class TestPlaidLinkLifecycle(HttpCase):
             "configured Web3 chains");
         await emit(frame, "web3-message", {message: "START_BRIDGE"});
         const deadline = performance.now() + 5000;
-        while ((scriptEvents.length < 5 || failures.length < 1)
+        while ((scriptEvents.length < 4 || failures.length < 1)
             && performance.now() < deadline) {
             await new Promise(resolve => setTimeout(resolve, 10));
         }
-        check(scriptEvents.length === 5, "all five real companion script events");
-        check(new Set(scriptEvents.map(event => event.url)).size === 5,
+        check(scriptEvents.length === 4, "all four bridge chunk script events");
+        check(new Set(scriptEvents.map(event => event.url)).size === 4,
             "one browser event per companion URL");
         const expectedEvent = "__FAILURE_TYPE__" === "error" ? "error" : "load";
         check(scriptEvents.every(event => event.type === expectedEvent),
@@ -2140,7 +2147,9 @@ class TestPlaidLinkLifecycle(HttpCase):
     check(frame && !frame.isConnected, "public destroy removes the owned Link iframe");
     console.log("test successful");
 })().catch(error => console.error(error.stack));
-""".replace("__FAILURE_TYPE__", failure_type),
+""".replace("__FAILURE_TYPE__", failure_type).replace(
+                "__COMPANION_URLS__", companion_urls(WEB3_BRIDGE_CHUNKS)
+            ),
             ready="typeof Plaid !== 'undefined' && typeof Plaid.create === 'function'",
             login="admin",
             timeout=90,
@@ -2150,7 +2159,7 @@ class TestPlaidLinkLifecycle(HttpCase):
             responses.append(self._companion_responses.get())
         self.assertEqual(
             sorted(urlparse(url).path for url, *_rest in responses),
-            sorted(f"/link/2.0.1951/{name}" for name in WEB3_COMPANIONS),
+            sorted(PLAID_BUILD_PATH + name for name in WEB3_BRIDGE_CHUNKS),
         )
         for url, code, content_type, body in responses:
             self.assertEqual(urlparse(url).hostname, "cdn.plaid.com")
@@ -2184,9 +2193,7 @@ class TestPlaidLinkLifecycle(HttpCase):
             BROWSER_HARNESS
             + r"""
 (async () => {
-    const names = ["0.js", "2.js", "10.js",
-        "vendors~LazyLink~web3Bridge.js", "web3Bridge.js"];
-    const urls = names.map(name => "https://cdn.plaid.com/link/2.0.1951/" + name);
+    const urls = __COMPANION_URLS__;
     const scripts = [], failures = [], successes = [], exits = [];
     const bodyStyle = document.body.style.cssText;
     function resource(event) {
@@ -2249,7 +2256,7 @@ class TestPlaidLinkLifecycle(HttpCase):
     check(frame && !frame.isConnected, "destroy removes the owned Link iframe");
     console.log("test successful");
 })().catch(error => console.error(error.stack));
-""",
+""".replace("__COMPANION_URLS__", companion_urls(WEB3_COMPANIONS)),
             ready="typeof Plaid !== 'undefined' && typeof Plaid.create === 'function'",
             login="admin",
             timeout=90,
@@ -2259,7 +2266,7 @@ class TestPlaidLinkLifecycle(HttpCase):
             responses.append(self._companion_responses.get())
         self.assertEqual(
             sorted(urlparse(url).path for url, *_rest in responses),
-            sorted(f"/link/2.0.1951/{name}" for name in WEB3_COMPANIONS),
+            sorted(PLAID_BUILD_PATH + name for name in WEB3_COMPANIONS),
         )
         for url, code, content_type, content in responses:
             name = Path(urlparse(url).path).name
@@ -2297,9 +2304,7 @@ class TestPlaidLinkLifecycle(HttpCase):
             + ";\n"
             + r"""
 (async () => {
-    const names = ["0.js", "2.js", "10.js",
-        "vendors~LazyLink~web3Bridge.js", "web3Bridge.js"];
-    const urls = names.map(name => "https://cdn.plaid.com/link/2.0.1951/" + name);
+    const urls = __COMPANION_URLS__;
     const globals = ["ethereum", "solana", "coinbaseWalletExtension", "bitkeep",
         "gamestop"];
     const descriptors = globals.map(name =>
@@ -2402,7 +2407,7 @@ class TestPlaidLinkLifecycle(HttpCase):
         "destroy releases the owned frame without wallet access or extra callbacks");
     console.log("test successful");
 })().catch(error => console.error(error.stack));
-""",
+""".replace("__COMPANION_URLS__", companion_urls(WEB3_COMPANIONS)),
             ready="typeof Plaid !== 'undefined' && typeof Plaid.create === 'function'",
             login="admin",
             timeout=90,
@@ -2412,7 +2417,7 @@ class TestPlaidLinkLifecycle(HttpCase):
             responses.append(self._companion_responses.get())
         self.assertEqual(
             sorted(urlparse(url).path for url, *_rest in responses),
-            sorted(f"/link/2.0.1951/{name}" for name in WEB3_COMPANIONS),
+            sorted(PLAID_BUILD_PATH + name for name in WEB3_COMPANIONS),
         )
         for url, code, content_type, content in responses:
             name = Path(urlparse(url).path).name

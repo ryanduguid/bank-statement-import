@@ -5268,9 +5268,19 @@ var Plaid = (function (e) {
         r = "",
         l = null,
         p = "",
+        heightPriority = "",
+        bodyHeight = "",
+        bodyHeightPriority = "",
+        resizeTimer = null,
         v = 0,
         _ = 0;
       const hide = () => {
+        if (!n) return;
+        if (resizeTimer !== null) {
+          clearTimeout(resizeTimer);
+          resizeTimer = null;
+          document.body.style.setProperty("height", bodyHeight, bodyHeightPriority);
+        }
         (n = !1),
           t && t.style.setProperty("display", "none", "important"),
           (() => {
@@ -5279,7 +5289,7 @@ var Plaid = (function (e) {
               r
                 ? (document.documentElement.id = r)
                 : document.documentElement.removeAttribute("id"),
-              (document.documentElement.style.height = p),
+              document.documentElement.style.setProperty("height", p, heightPriority),
               window.scrollTo(v, _),
               window.parent.focus(),
               null != l && l.focus();
@@ -5322,6 +5332,9 @@ var Plaid = (function (e) {
             (v = window.scrollX),
             (_ = window.scrollY),
             (p = document.documentElement.style.height),
+            (heightPriority = document.documentElement.style.getPropertyPriority("height")),
+            (bodyHeight = document.body.style.getPropertyValue("height")),
+            (bodyHeightPriority = document.body.style.getPropertyPriority("height")),
             (r = document.documentElement.id),
             (() => {
               const e = document.createElement("style");
@@ -5336,13 +5349,13 @@ var Plaid = (function (e) {
             const n = window.self !== window.top;
             (0, a.default)().isIOSChrome &&
               !n &&
-              setTimeout(function () {
+              (resizeTimer = setTimeout(function () {
                 document.body.style.setProperty(
                   "height",
                   window.innerHeight + "px",
                   "important"
                 );
-              }, 100),
+              }, 100)),
               t.style.setProperty("display", "block", "important"),
               t.focus(),
               t.contentWindow && t.contentWindow.focus();
@@ -6192,7 +6205,7 @@ var Plaid = (function (e) {
     "use strict";
     var r = n(270).charAt;
     e.exports = function (e, t, n) {
-      return t + (n ? r(e, t).length : 1);
+      return t + (n ? r(e, t).length || 1 : 1);
     };
   },
   482: function (e, t, n) {

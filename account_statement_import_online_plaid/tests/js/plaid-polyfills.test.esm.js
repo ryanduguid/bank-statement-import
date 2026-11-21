@@ -10,10 +10,10 @@ const filename = new URL(
     import.meta.url
 );
 const source = (await fs.readFile(filename, "utf8")).replace(/\r\n/g, "\n");
-const startup = "return __webpack_require__((__webpack_require__.s = 1489));\n})([";
+const startup = "return __webpack_require__((__webpack_require__.s = 4522));\n})({";
 assert.equal(source.split(startup).length, 2, "review a changed SDK layout");
 const begin = source.indexOf(startup) + startup.length - 1;
-const end = source.lastIndexOf("]);");
+const end = source.lastIndexOf("});");
 assert.ok(end > begin);
 assert.equal(source.slice(end + 3).trim(), "");
 const modules = source.slice(begin, end + 1);
@@ -23,14 +23,14 @@ function context(capture) {
     vm.runInContext(
         `
         const modules = (${modules});
-        if (!Array.isArray(modules) || modules.length !== 1519)
-            throw new Error('review a changed SDK module array');
-        for (const index of [66, 175, 204, 212])
+        if (Object.keys(modules).length !== 263)
+            throw new Error('review a changed SDK module map');
+        for (const index of [37, 270, 480, 481])
             if (typeof modules[index] !== 'function')
                 throw new Error('missing polyfill module');
         const cache = {};
         function load(index) {
-            if (index === 175 && ${capture}) return (key, factory) => {
+            if (index === 480 && ${capture}) return (key, factory) => {
                 globalThis.replaceFallback = factory(Symbol.replace,
                     String.prototype.replace, () => ({done: false}))[1];
             };
@@ -41,7 +41,7 @@ function context(capture) {
         }
         globalThis.beforeStringReplace = String.prototype.replace;
         globalThis.beforeRegExpReplace = RegExp.prototype[Symbol.replace];
-        load(66);
+        load(37);
         `,
         sandbox,
         {timeout: 1000}
@@ -86,7 +86,7 @@ test("bundled Unicode index advancement makes progress at the end", () => {
     ]) {
         assert.equal(
             vm.runInContext(
-                `load(212)(${JSON.stringify(input)}, ${index}, ${unicode})`,
+                `load(481)(${JSON.stringify(input)}, ${index}, ${unicode})`,
                 sandbox,
                 {timeout: 250}
             ),
