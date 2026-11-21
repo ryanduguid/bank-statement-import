@@ -3,6 +3,7 @@
 
 from types import SimpleNamespace
 from unittest.mock import patch
+from uuid import uuid4
 
 from odoo.tests import HttpCase, tagged
 
@@ -30,7 +31,7 @@ window.Plaid = {
                         session.resizeAfterDestroy = !frame.isConnected;
                         document.body.style.setProperty("height", "100px", "important");
                     }, 100);
-                    if (options.token === "fixture-first") {
+                    if (options.token === "fixture-link-1") {
                         options.onExit(null);
                     }
                 }
@@ -63,32 +64,9 @@ async function waitFor(condition, message) {
 """
 
 
-@tagged("post_install", "-at_install")
-class TestPlaidLinkLifecycle(HttpCase):
-    def setUp(self):
-        super().setUp()
-        self.script_requests = 0
-        self.fail_first_load = False
-
-    def fetch_proxy(self, url):
-        if url != LINK_SCRIPT:
-            return super().fetch_proxy(url)
-        self.script_requests += 1
-        if self.fail_first_load and self.script_requests == 1:
-            return self.make_fetch_proxy_response("", code=503)
-        response = self.make_fetch_proxy_response(SDK_FIXTURE)
-        response["responseHeaders"] = [
-            {"name": "content-type", "value": "application/javascript"},
-            {"name": "cache-control", "value": "no-store"},
-        ]
-        return response
-
-    def test_load_failure_retries_and_pending_link_owns_its_callback(self):
-        self.fail_first_load = True
-        self.browser_js(
-            "/odoo",
-            BROWSER_HELPERS
-            + """
+RETRY_AND_NAVIGATION = (
+    BROWSER_HELPERS
+    + """
 (async () => {
     const {registry} = odoo.loader.modules.get("@web/core/registry");
     const login = registry.category("actions").get("plaid_login");
@@ -155,69 +133,12 @@ class TestPlaidLinkLifecycle(HttpCase):
     }
     console.log("test successful");
 })().catch((error) => console.error(error.stack));
-""",
-            ready=(
-                "window.odoo?.loader?.modules.has("
-                "'@account_statement_import_online_plaid/js/plaid_integration.esm')"
-            ),
-            login="admin",
-        )
-        self.assertEqual(self.script_requests, 2)
+"""
+)
 
-    def test_mobile_sync_cancels_and_links_the_selected_account(self):
-        self.browser_size = "390x844"
-        self.touch_enabled = True
-        bank = self.env["res.bank"].create(
-            {"name": "Plaid UI fixture", "country": self.env.ref("base.us").id}
-        )
-        bank_account = self.env["res.partner.bank"].create(
-            {
-                "acc_number": "PLAID-UI-FIXTURE",
-                "bank_id": bank.id,
-                "partner_id": self.env.company.partner_id.id,
-            }
-        )
-        journal = self.env["account.journal"].create(
-            {
-                "name": "Plaid UI fixture",
-                "code": "PLUI",
-                "type": "bank",
-                "currency_id": self.env.ref("base.USD").id,
-                "bank_account_id": bank_account.id,
-            }
-        )
-        provider = self.env["online.bank.statement.provider"].create(
-            {
-                "journal_id": journal.id,
-                "service": "plaid",
-                "username": "fixture-client-id",
-                "password": "fixture-secret",
-                "plaid_host": "sandbox",
-            }
-        )
-        self.assertFalse(provider.plaid_access_token)
-        self.assertFalse(provider.plaid_account_id)
-        action = self.env.ref(
-            "account_statement_import_online.online_bank_statement_provider_action"
-        )
-        with (
-            patch(
-                "plaid.api.plaid_api.PlaidApi.link_token_create",
-                side_effect=[
-                    SimpleNamespace(to_dict=lambda: {"link_token": "fixture-first"}),
-                    SimpleNamespace(to_dict=lambda: {"link_token": "fixture-left"}),
-                    SimpleNamespace(to_dict=lambda: {"link_token": "fixture-second"}),
-                ],
-            ) as link,
-            patch(
-                "plaid.api.plaid_api.PlaidApi.item_public_token_exchange",
-                return_value={"access_token": "fixture-access"},
-            ) as exchange,
-        ):
-            self.browser_js(
-                f"/odoo/action-{action.id}/{provider.id}",
-                BROWSER_HELPERS
-                + """
+MOBILE_ACCOUNT_SELECTION = (
+    BROWSER_HELPERS
+    + """
 (async () => {
     const actionsSelector = ".o_form_view .o_cp_action_menus button";
     const actions = () => document.querySelector(actionsSelector);
@@ -247,7 +168,7 @@ class TestPlaidLinkLifecycle(HttpCase):
     await waitFor(() => window.linkSessions?.[0]?.destroyed && !actions()?.disabled,
         "early exit must destroy Link and re-enable Actions");
     const [cancelled] = window.linkSessions;
-    check(cancelled.options.token === "fixture-first" && cancelled.resizeAfterDestroy
+    check(cancelled.options.token === "fixture-link-1" && cancelled.resizeAfterDestroy
         && cancelled.destroyed === 1 && !cancelled.frame.isConnected,
         "early exit must survive a viewport resize after the iframe closes");
     checkLayout();
@@ -266,7 +187,7 @@ class TestPlaidLinkLifecycle(HttpCase):
     await waitFor(() => window.linkSessions[2]?.frame.isConnected,
         "the mobile sync button must reopen after navigation");
     const completed = window.linkSessions[2];
-    check(completed.options.token === "fixture-second" && actions().disabled,
+    check(completed.options.token === "fixture-link-3" && actions().disabled,
         "the new Link session must keep Actions disabled while it is open");
     check(document.body.style.overflow === "hidden", "Link must lock scrolling");
     completed.options.onSuccess("fixture-public", {accounts: [
@@ -278,7 +199,101 @@ class TestPlaidLinkLifecycle(HttpCase):
     checkLayout();
     console.log("test successful");
 })().catch((error) => console.error(error.stack));
-""",
+"""
+)
+
+
+@tagged("post_install", "-at_install")
+class TestPlaidLinkLifecycle(HttpCase):
+    def setUp(self):
+        super().setUp()
+        self.script_requests = 0
+        self.fail_first_load = False
+
+    def fetch_proxy(self, url):
+        if url != LINK_SCRIPT:
+            return super().fetch_proxy(url)
+        self.script_requests += 1
+        if self.fail_first_load and self.script_requests == 1:
+            return self.make_fetch_proxy_response("", code=503)
+        response = self.make_fetch_proxy_response(SDK_FIXTURE)
+        response["responseHeaders"] = [
+            {"name": "content-type", "value": "application/javascript"},
+            {"name": "cache-control", "value": "no-store"},
+        ]
+        return response
+
+    def test_load_failure_retries_and_pending_link_owns_its_callback(self):
+        self.fail_first_load = True
+        self.browser_js(
+            "/odoo",
+            RETRY_AND_NAVIGATION,
+            ready=(
+                "window.odoo?.loader?.modules.has("
+                "'@account_statement_import_online_plaid/js/plaid_integration.esm')"
+            ),
+            login="admin",
+        )
+        self.assertEqual(self.script_requests, 2)
+
+    def _make_provider(self):
+        bank = self.env["res.bank"].create(
+            {"name": "Plaid UI fixture", "country": self.env.ref("base.us").id}
+        )
+        bank_account = self.env["res.partner.bank"].create(
+            {
+                "acc_number": "PLAID-UI-FIXTURE",
+                "bank_id": bank.id,
+                "partner_id": self.env.company.partner_id.id,
+            }
+        )
+        journal = self.env["account.journal"].create(
+            {
+                "name": "Plaid UI fixture",
+                "code": "PLUI",
+                "type": "bank",
+                "currency_id": self.env.ref("base.USD").id,
+                "bank_account_id": bank_account.id,
+            }
+        )
+        return self.env["online.bank.statement.provider"].create(
+            {
+                "journal_id": journal.id,
+                "service": "plaid",
+                "username": "fixture-client-id",
+                "password": uuid4().hex,
+                "plaid_host": "sandbox",
+            }
+        )
+
+    def test_mobile_sync_cancels_and_links_the_selected_account(self):
+        self.browser_size = "390x844"
+        self.touch_enabled = True
+        provider = self._make_provider()
+        access_id = uuid4().hex
+        self.assertFalse(provider.plaid_access_token)
+        self.assertFalse(provider.plaid_account_id)
+        action = self.env.ref(
+            "account_statement_import_online.online_bank_statement_provider_action"
+        )
+        with (
+            patch(
+                "plaid.api.plaid_api.PlaidApi.link_token_create",
+                side_effect=[
+                    SimpleNamespace(
+                        to_dict=lambda i=i: {"link_token": f"fixture-link-{i}"}
+                    )
+                    for i in range(1, 4)
+                ],
+            ) as link,
+            patch(
+                "plaid.api.plaid_api.PlaidApi.item_public_token_exchange",
+                return_value={"access_token": access_id},
+            ) as exchange,
+        ):
+            self.browser_js(
+                f"/odoo/action-{action.id}/{provider.id}",
+                MOBILE_ACCOUNT_SELECTION,
                 ready="""document.querySelector(
                     ".o_form_view .o_cp_action_menus button"
                 ) !== null""",
@@ -288,6 +303,6 @@ class TestPlaidLinkLifecycle(HttpCase):
             exchange.assert_called_once()
             self.assertEqual(exchange.call_args.args[0].public_token, "fixture-public")
         provider.invalidate_recordset(["plaid_access_token", "plaid_account_id"])
-        self.assertEqual(provider.plaid_access_token, "fixture-access")
+        self.assertEqual(provider.plaid_access_token, access_id)
         self.assertEqual(provider.plaid_account_id, "fixture-single-account")
         self.assertEqual(self.script_requests, 1)

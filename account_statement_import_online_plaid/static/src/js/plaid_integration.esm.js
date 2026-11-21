@@ -75,7 +75,7 @@ export async function plaid_login(env, action) {
         return;
     }
     linkActive = true;
-    const navigation = new AbortController();
+    const navigation = new window.AbortController();
     const cancel = () => navigation.abort();
     const {signal} = navigation;
     const abandoned = new Promise((resolve) =>
