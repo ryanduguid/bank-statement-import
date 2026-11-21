@@ -13,21 +13,36 @@ window.Plaid = {
     create(options) {
         const frame = document.createElement("iframe");
         frame.title = "Fixture Link";
-        const bodyStyle = document.body.style.cssText;
+        const root = document.documentElement;
+        const rootHeight = root.style.height;
+        const overflow = document.body.style.overflow;
+        const isIOSChrome = /CriOS/.test(navigator.userAgent);
         const session = {options, frame, destroyed: 0};
         window.linkSessions.push(session);
         return {
             open() {
                 document.body.append(frame);
-                if (matchMedia("(max-width: 500px)").matches) {
-                    document.body.style.setProperty("height", "100px", "important");
+                if (isIOSChrome) {
+                    root.id = "fixture-link-active";
+                    root.style.setProperty("height", "100px", "important");
                     document.body.style.overflow = "hidden";
+                    setTimeout(() => {
+                        session.resizeAfterDestroy = !frame.isConnected;
+                        document.body.style.setProperty("height", "100px", "important");
+                    }, 100);
+                    if (options.token === "fixture-first") {
+                        options.onExit(null);
+                    }
                 }
             },
             destroy() {
                 session.destroyed++;
                 frame.remove();
-                document.body.style.cssText = bodyStyle;
+                if (isIOSChrome) {
+                    root.removeAttribute("id");
+                    root.style.height = rootHeight;
+                    document.body.style.overflow = overflow;
+                }
             },
         };
     },
@@ -187,39 +202,58 @@ class TestPlaidLinkLifecycle(HttpCase):
                 BROWSER_HELPERS
                 + """
 (async () => {
-    const selector = ".o_form_view button[name='action_sync_with_plaid']";
-    const sync = () => document.querySelector(selector);
-    const bodyStyle = document.body.style.cssText;
+    const actionsSelector = ".o_form_view .o_cp_action_menus button";
+    const actions = () => document.querySelector(actionsSelector);
+    const sync = () => document.querySelector("button[name='action_sync_with_plaid']");
+    async function startLink() {
+        actions().click();
+        await waitFor(sync, "Odoo must offer Plaid sync in the mobile Actions menu");
+        sync().click();
+    }
+    const root = document.documentElement;
+    Object.defineProperty(navigator, "userAgent", {value: "iPhone CriOS Mobile"});
+    root.id = "odoo-fixture-root";
+    root.style.setProperty("height", "94vh", "important");
+    document.body.style.setProperty("height", "95vh", "important");
+    const bodyOverflow = document.body.style.overflow;
+    function checkLayout() {
+        check(root.id === "odoo-fixture-root" && root.style.height === "94vh"
+            && root.style.getPropertyPriority("height") === "important",
+            "Link must restore the document root ID and height with priority");
+        check(document.body.style.height === "95vh"
+            && document.body.style.getPropertyPriority("height") === "important"
+            && document.body.style.overflow === bodyOverflow,
+            "Link must restore body height, priority and scroll state");
+    }
     check(window.innerWidth === 390 && !window.Plaid, "expected lazy Link on mobile");
-    sync().click();
-    await waitFor(() => window.linkSessions?.[0]?.frame.isConnected,
-        "the mobile sync button must open Link");
+    await startLink();
+    await waitFor(() => window.linkSessions?.[0]?.destroyed && !actions()?.disabled,
+        "early exit must destroy Link and re-enable Actions");
     const [cancelled] = window.linkSessions;
-    check(cancelled.options.token === "fixture-first" && sync().disabled,
-        "the sync action must remain pending while Link is open");
-    check(document.body.style.overflow === "hidden", "fixture locks mobile scrolling");
-    cancelled.options.onExit(null);
-    await waitFor(() => sync() && !sync().disabled, "sync must be available again");
-    check(cancelled.destroyed === 1 && !cancelled.frame.isConnected
-        && document.body.style.cssText === bodyStyle, "exit must restore layout");
+    check(cancelled.options.token === "fixture-first" && cancelled.resizeAfterDestroy
+        && cancelled.destroyed === 1 && !cancelled.frame.isConnected,
+        "early exit must survive a viewport resize after the iframe closes");
+    checkLayout();
 
-    sync().click();
+    await startLink();
     await waitFor(() => window.linkSessions[1]?.frame.isConnected,
         "the mobile sync button must reopen Link");
     const completed = window.linkSessions[1];
-    check(completed.options.token === "fixture-second", "retry must use a new token");
+    check(completed.options.token === "fixture-second" && actions().disabled,
+        "the new Link session must keep Actions disabled while it is open");
+    check(document.body.style.overflow === "hidden", "Link must lock scrolling");
     completed.options.onSuccess("fixture-public", {accounts: [
         {id: "fixture-single-account", name: "Fixture account"},
     ]});
-    await waitFor(() => sync() && !sync().disabled, "sync must finish the write");
-    check(completed.destroyed === 1 && !completed.frame.isConnected
-        && document.body.style.cssText === bodyStyle,
-        "successful Link must also release mobile layout");
+    await waitFor(() => actions() && !actions().disabled, "sync must finish the write");
+    check(completed.destroyed === 1 && !completed.frame.isConnected,
+        "successful Link must destroy its handler once");
+    checkLayout();
     console.log("test successful");
 })().catch((error) => console.error(error.stack));
 """,
                 ready="""document.querySelector(
-                    ".o_form_view button[name='action_sync_with_plaid']"
+                    ".o_form_view .o_cp_action_menus button"
                 ) !== null""",
                 login="admin",
             )

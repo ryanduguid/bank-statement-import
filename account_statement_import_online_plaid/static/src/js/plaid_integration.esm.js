@@ -1,13 +1,33 @@
 import {_t} from "@web/core/l10n/translation";
+import {browser} from "@web/core/browser/browser";
+import {isMobileOS} from "@web/core/browser/feature_detection";
 import {loadJS} from "@web/core/assets";
 import {registry} from "@web/core/registry";
 
 const linkScript = "https://cdn.plaid.com/link/v2/stable/link-initialize.js";
+const iosChromeResizeDelay = 100;
 let linkActive = false;
+
+function rememberHeight(element) {
+    const {style} = element;
+    const height = style.getPropertyValue("height");
+    const priority = style.getPropertyPriority("height");
+    return () => style.setProperty("height", height, priority);
+}
 
 async function openLink(token) {
     await loadJS(linkScript);
+    const {userAgent} = browser.navigator;
+    const isIOSChrome = /CriOS/i.test(userAgent);
+    const root = globalThis.document.documentElement;
+    const rootId = root.getAttribute("id");
+    const restoreRootHeight =
+        isMobileOS() || /Mobi/i.test(userAgent) ? rememberHeight(root) : null;
+    const restoreBodyHeight = isIOSChrome
+        ? rememberHeight(globalThis.document.body)
+        : null;
     let handler = null;
+    let viewportSettled = null;
     try {
         return await new Promise((resolve, reject) => {
             handler = globalThis.Plaid.create({
@@ -16,10 +36,33 @@ async function openLink(token) {
                     resolve([publicToken, metadata?.accounts ?? []]),
                 onExit: (error) => (error ? reject(error) : resolve()),
             });
-            handler.open();
+            try {
+                handler.open();
+            } finally {
+                if (isIOSChrome) {
+                    viewportSettled = new Promise((done) =>
+                        browser.setTimeout(done, iosChromeResizeDelay)
+                    );
+                }
+            }
         });
     } finally {
-        handler?.destroy();
+        try {
+            handler?.destroy();
+        } finally {
+            if (restoreRootHeight) {
+                restoreRootHeight();
+                if (rootId === null) {
+                    root.removeAttribute("id");
+                } else {
+                    root.setAttribute("id", rootId);
+                }
+            }
+            if (restoreBodyHeight) {
+                await viewportSettled;
+                restoreBodyHeight();
+            }
+        }
     }
 }
 
