@@ -14,7 +14,7 @@
     ],
     "assets": {
         "web.assets_backend": [
-            "/account_statement_import_online_plaid/static/src/**/*.js",
+            "account_statement_import_online_plaid/static/src/js/plaid_integration.esm.js",
         ],
     },
     "external_dependencies": {

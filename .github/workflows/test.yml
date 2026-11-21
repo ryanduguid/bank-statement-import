@@ -65,44 +65,6 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "26.13.1"
-      - name: Prepare pinned Plaid Web3 test dependencies
-        shell: bash
-        run: |
-          node - <<'JS'
-          const assert = require('node:assert/strict');
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const { createHash } = require('node:crypto');
-          const manifest = JSON.parse(fs.readFileSync(
-            'account_statement_import_online_plaid/tests/fixtures/plaid_web3_companions.json', 'utf8'));
-          const names = ['vendors~chainUtilities~web3Bridge.js', 'vendors~web3Bridge.js', '2.js',
-            'web3Bridge.js', 'chainUtilities.js'];
-          assert.equal(manifest.base_url, 'https://cdn.plaid.com/link/2.0.3119/');
-          assert.deepEqual(manifest.assets.map(asset => asset.name), names);
-          const sdk = fs.readFileSync(
-            'account_statement_import_online_plaid/static/src/lib/link/v2/stable/link-initialize.js', 'utf8');
-          assert(sdk.includes('__webpack_require__.p = "' + new URL(manifest.base_url).pathname + '"'),
-            'The vendored SDK and the companion manifest must name the same Plaid build');
-          const directory = path.join(process.env.RUNNER_TEMP, 'plaid-web3-companions');
-          fs.mkdirSync(directory, { recursive: true });
-          (async () => {
-            for (const asset of manifest.assets) {
-              const response = await fetch(manifest.base_url + asset.name,
-                { redirect: 'error', signal: AbortSignal.timeout(30000) });
-              const gone = response.status === 403 || response.status === 404;
-              assert(response.ok, gone
-                ? 'Plaid deleted the pinned Link build ' + manifest.base_url + ' (' + asset.name
-                  + ': HTTP ' + response.status + '). Move the vendored link-initialize.js and '
-                  + 'tests/fixtures/plaid_web3_companions.json to the current Plaid build together.'
-                : 'Companion download failed: ' + asset.name + ': HTTP ' + response.status);
-              const bytes = Buffer.from(await response.arrayBuffer());
-              assert.equal(bytes.length, asset.bytes);
-              assert.equal(createHash('sha256').update(bytes).digest('hex'), asset.sha256);
-              fs.writeFileSync(path.join(directory, asset.name), bytes);
-            }
-            fs.appendFileSync(process.env.GITHUB_ENV, 'PLAID_TEST_COMPANION_DIR=' + directory + '\n');
-          })().catch(error => { console.error(error); process.exitCode = 1; });
-          JS
       - name: Check the browser coverage collector
         shell: bash
         env:
