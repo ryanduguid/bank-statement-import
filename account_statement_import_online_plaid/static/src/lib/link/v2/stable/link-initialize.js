@@ -5453,8 +5453,7 @@ var Plaid = (function (e) {
     }
     t.findScriptTag = () => {
       const e = document.getElementsByTagName("script");
-      for (let t = 0, n = e.length; t < n; t += 1)
-        if (/link-initialize(\..*?)?\.js$/.test(e[t].src)) return e[t];
+      if (e.length > 0) return e[0];
       throw new Error("Failed to find script");
     };
     t.extendMessageHandlers = (e, t, n, r) =>
