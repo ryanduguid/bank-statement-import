@@ -15,8 +15,11 @@ function rememberHeight(element) {
     return () => style.setProperty("height", height, priority);
 }
 
-async function openLink(token) {
-    await loadJS(linkScript);
+async function openLink(token, abandoned, signal) {
+    await Promise.race([loadJS(linkScript), abandoned]);
+    if (signal.aborted) {
+        return;
+    }
     const {userAgent} = browser.navigator;
     const isIOSChrome = /CriOS/i.test(userAgent);
     const root = globalThis.document.documentElement;
@@ -29,7 +32,7 @@ async function openLink(token) {
     let handler = null;
     let viewportSettled = null;
     try {
-        return await new Promise((resolve, reject) => {
+        const linked = new Promise((resolve, reject) => {
             handler = globalThis.Plaid.create({
                 token,
                 onSuccess: (publicToken, metadata) =>
@@ -46,6 +49,7 @@ async function openLink(token) {
                 }
             }
         });
+        return await Promise.race([linked, abandoned]);
     } finally {
         try {
             handler?.destroy();
@@ -71,15 +75,24 @@ export async function plaid_login(env, action) {
         return;
     }
     linkActive = true;
+    const navigation = new AbortController();
+    const cancel = () => navigation.abort();
+    const {signal} = navigation;
+    const abandoned = new Promise((resolve) =>
+        signal.addEventListener("abort", () => resolve(), {once: true})
+    );
     try {
+        globalThis.addEventListener("pagehide", cancel, {signal});
+        globalThis.addEventListener("popstate", cancel, {signal});
+        env.bus.addEventListener("ACTION_MANAGER:UPDATE", cancel, {signal});
         const {token, call_model, call_method, object_id} = action.params;
-        const result = await openLink(token).catch(() => {
+        const result = await openLink(token, abandoned, signal).catch(() => {
             env.services.notification.add(
                 _t("Could not complete Plaid Link. Reload the page if retrying fails."),
                 {type: "danger"}
             );
         });
-        if (result) {
+        if (result && !signal.aborted) {
             const [publicToken, accounts] = result;
             await env.services.orm.call(call_model, call_method, [
                 publicToken,
@@ -88,6 +101,7 @@ export async function plaid_login(env, action) {
             ]);
         }
     } finally {
+        navigation.abort();
         linkActive = false;
     }
 }

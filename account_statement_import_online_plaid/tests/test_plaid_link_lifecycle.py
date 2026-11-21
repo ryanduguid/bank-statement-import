@@ -94,7 +94,7 @@ class TestPlaidLinkLifecycle(HttpCase):
     const login = registry.category("actions").get("plaid_login");
     const calls = [];
     const notifications = [];
-    const env = {services: {
+    const env = {bus: new EventTarget(), services: {
         orm: {call: (...args) => calls.push(args)},
         notification: {add: (...args) => notifications.push(args)},
     }};
@@ -137,6 +137,22 @@ class TestPlaidLinkLifecycle(HttpCase):
     check(failed.destroyed === 1 && !failed.frame.isConnected
         && notifications.length === 2 && calls.length === 1,
         "a Link error must clean up, notify and leave the account alone");
+    for (const abandon of [
+        () => env.bus.dispatchEvent(new Event("ACTION_MANAGER:UPDATE")),
+        () => window.dispatchEvent(new Event("pagehide")),
+    ]) {
+        const index = window.linkSessions.length;
+        const pending = login(env, {params});
+        await waitFor(() => window.linkSessions[index]?.frame.isConnected,
+            "an abandoned Link must leave the action available for reopening");
+        const current = window.linkSessions[index];
+        abandon();
+        await pending;
+        current.options.onSuccess("fixture-abandoned", {accounts: [account]});
+        check(current.destroyed === 1 && !current.frame.isConnected
+            && notifications.length === 2 && calls.length === 1,
+            "navigation must tear down once and ignore a late success");
+    }
     console.log("test successful");
 })().catch((error) => console.error(error.stack));
 """,
@@ -189,6 +205,7 @@ class TestPlaidLinkLifecycle(HttpCase):
                 "plaid.api.plaid_api.PlaidApi.link_token_create",
                 side_effect=[
                     SimpleNamespace(to_dict=lambda: {"link_token": "fixture-first"}),
+                    SimpleNamespace(to_dict=lambda: {"link_token": "fixture-left"}),
                     SimpleNamespace(to_dict=lambda: {"link_token": "fixture-second"}),
                 ],
             ) as link,
@@ -238,7 +255,17 @@ class TestPlaidLinkLifecycle(HttpCase):
     await startLink();
     await waitFor(() => window.linkSessions[1]?.frame.isConnected,
         "the mobile sync button must reopen Link");
-    const completed = window.linkSessions[1];
+    const abandoned = window.linkSessions[1];
+    window.dispatchEvent(new Event("pagehide"));
+    await waitFor(() => abandoned.destroyed && !actions()?.disabled,
+        "navigation must close the mobile action before it receives a callback");
+    check(abandoned.destroyed === 1 && !abandoned.frame.isConnected,
+        "an abandoned mobile Link must destroy its handler once");
+    checkLayout();
+    await startLink();
+    await waitFor(() => window.linkSessions[2]?.frame.isConnected,
+        "the mobile sync button must reopen after navigation");
+    const completed = window.linkSessions[2];
     check(completed.options.token === "fixture-second" && actions().disabled,
         "the new Link session must keep Actions disabled while it is open");
     check(document.body.style.overflow === "hidden", "Link must lock scrolling");
@@ -257,7 +284,7 @@ class TestPlaidLinkLifecycle(HttpCase):
                 ) !== null""",
                 login="admin",
             )
-            self.assertEqual(link.call_count, 2)
+            self.assertEqual(link.call_count, 3)
             exchange.assert_called_once()
             self.assertEqual(exchange.call_args.args[0].public_token, "fixture-public")
         provider.invalidate_recordset(["plaid_access_token", "plaid_account_id"])
