@@ -16,7 +16,7 @@ The Codecov badge reports this fork’s `18.0` branch. The other badges above re
 
 **Fork status**
 
-[![Fork code quality](https://img.shields.io/codacy/grade/9afbb4f478fe4152baa2e7aa5879a1ac/18.0?style=flat&labelColor=000000)](https://app.codacy.com/gh/ryanduguid/bank-statement-import/dashboard)
+[![Fork code quality](https://img.shields.io/codacy/grade/9afbb4f478fe4152baa2e7aa5879a1ac/18.0?style=flat&labelColor=000000)](https://app.codacy.com/gh/ryanduguid/bank-statement-import/dashboard) [![Fork tests](https://github.com/ryanduguid/bank-statement-import/actions/workflows/test.yml/badge.svg?branch=18.0)](https://github.com/ryanduguid/bank-statement-import/actions/workflows/test.yml?query=branch%3A18.0)
 
 </div>
 
