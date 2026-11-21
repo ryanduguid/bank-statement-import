@@ -1,6 +1,5 @@
-/** @odoo-module **/
-import {loadJS} from "@web/core/assets";
 import {_t} from "@web/core/l10n/translation";
+import {loadJS} from "@web/core/assets";
 import {registry} from "@web/core/registry";
 
 const linkScript = "https://cdn.plaid.com/link/v2/stable/link-initialize.js";
@@ -8,10 +7,10 @@ let linkActive = false;
 
 async function openLink(token) {
     await loadJS(linkScript);
-    let handler;
+    let handler = null;
     try {
         return await new Promise((resolve, reject) => {
-            handler = window.Plaid.create({
+            handler = globalThis.Plaid.create({
                 token,
                 onSuccess: (publicToken, metadata) =>
                     resolve([publicToken, metadata?.accounts ?? []]),
