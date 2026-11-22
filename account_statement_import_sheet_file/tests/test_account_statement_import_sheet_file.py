@@ -79,9 +79,13 @@ class TestAccountStatementImportSheetFile(Common):
             b"09/02/2026,-12.50,Fee\n"
             b"09/03/2026,999,Footer\n \t\n\n"
         )
-        lines = self.parser._parse_lines(self.sample_statement_map, data, "USD")
-        self.assertEqual([line["amount"] for line in lines], [100, -12.50])
-        self.assertEqual(lines[0]["description"], "Deposit\ncontinued")
+        for csv_data in (data, data.rstrip()):
+            with self.subTest(csv_data=csv_data):
+                lines = self.parser._parse_lines(
+                    self.sample_statement_map, csv_data, "USD"
+                )
+                self.assertEqual([line["amount"] for line in lines], [100, -12.50])
+                self.assertEqual(lines[0]["description"], "Deposit\ncontinued")
 
     def test_whitespace_only_csv_fails_as_an_empty_file(self):
         with self.assertRaisesRegex(UserError, "Failed to parse file"):
