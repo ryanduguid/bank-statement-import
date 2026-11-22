@@ -152,12 +152,8 @@ class PontoInterface(models.AbstractModel):
         """Interact with Ponto to get next page of data."""
         headers = self._get_request_headers(access_data)
         _logger.debug(
-            _("GET request to %(url)s with headers %(headers)s and params %(params)s"),
-            dict(
-                url=url,
-                headers=headers,
-                params=params,
-            ),
+            _("GET request to %(url)s with params %(params)s"),
+            dict(url=url, params=params),
         )
         response = requests.get(
             url,
