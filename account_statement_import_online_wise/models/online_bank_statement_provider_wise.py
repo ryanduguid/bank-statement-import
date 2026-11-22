@@ -177,7 +177,7 @@ class OnlineBankStatementProviderWise(models.Model):
         details = transaction.get("details", {})
         exchange_details = transaction.get("exchangeDetails")
         recipient = details.get("recipient")
-        total_fees = transaction.get("totalFees")
+        total_fees = transaction.get("totalFees") or {}
         date = transaction["date"]
         payment_reference = details.get("paymentReference")
         description = details.get("description")
@@ -185,8 +185,8 @@ class OnlineBankStatementProviderWise(models.Model):
         if description:
             pay_ref = f"{pay_ref}: {description}"
         amount = transaction["amount"]
-        amount_value = amount.get("value", 0)
-        fees_value = total_fees.get("value", Decimal())
+        amount_value = Decimal(amount.get("value", 0))
+        fees_value = Decimal(total_fees.get("value", 0))
         if transaction_type == "CREDIT" and details.get("type") == "MONEY_ADDED":
             fees_value = fees_value.copy_negate()
         else:

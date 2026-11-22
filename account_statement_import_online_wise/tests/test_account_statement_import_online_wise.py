@@ -400,6 +400,37 @@ edF6byMgXSzgOWYuRPXwmHpBQV0GiexQUAxVyUzaVWfil69LaFfXaw==
         self.assertEqual(data[1]["balance_start"], 42.0)
         self.assertEqual(data[1]["balance_end_real"], 42.0)
 
+    def test_transactions_with_optional_fees_and_whole_amounts(self):
+        transaction = {
+            "type": "DEBIT",
+            "date": "2000-01-01T00:00:00.000Z",
+            "amount": {"value": -10, "currency": "EUR"},
+            "referenceNumber": "TRANSFER-100",
+        }
+        cases = (
+            ("omitted fees", {}, ["-10"]),
+            ("null fees", {"totalFees": None}, ["-10"]),
+            ("whole fees", {"totalFees": {"value": 1}}, ["-9", "-1"]),
+            ("decimal fees", {"totalFees": {"value": 0.1}}, ["-9.9", "-0.1"]),
+            (
+                "credit with whole fees",
+                {
+                    "type": "CREDIT",
+                    "details": {"type": "MONEY_ADDED"},
+                    "amount": {"value": 10, "currency": "EUR"},
+                    "totalFees": {"value": 1},
+                },
+                ["11", "-1"],
+            ),
+        )
+        for label, fee_fields, expected_amounts in cases:
+            with self.subTest(label=label):
+                lines = self.wise_parse_transaction(
+                    json.dumps({**transaction, **fee_fields})
+                )
+                self.assertEqual([line["amount"] for line in lines], expected_amounts)
+                self.assertEqual(lines[0]["payment_ref"], "TRANSFER-100")
+
     def test_transaction_parse_1(self):
         lines = self.wise_parse_transaction(
             """{
