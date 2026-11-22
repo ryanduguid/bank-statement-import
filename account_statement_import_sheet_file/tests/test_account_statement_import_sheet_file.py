@@ -737,6 +737,32 @@ class TestAccountStatementImportSheetFile(Common):
                 result = self.parser._parse_decimal(value, mock_mapping)
                 self.assertEqual(result, expected, f"Failed for value: {value}")
 
+    def test_parse_implied_decimals_with_short_amounts(self):
+        parser = self.parser.with_context(journal_id=self.journal.id)
+        mapping = self.mock_mapping_none_none
+        for value, expected in (
+            ("1", 0.01),
+            ("-1", -0.01),
+            ("+1", 0.01),
+            ("-10", -0.1),
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(parser._parse_decimal(value, mapping), expected)
+        for value in ("--1", "-+1", "1+2"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                parser._parse_decimal(value, mapping)
+
+    def test_parse_implied_decimals_for_whole_currency(self):
+        currency = self.env.ref("base.JPY")
+        currency.active = True
+        self.journal.currency_id = currency
+        parser = self.parser.with_context(journal_id=self.journal.id)
+        for value, expected in (("123", 123), ("-123", -123), ("+123", 123)):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    parser._parse_decimal(value, self.mock_mapping_none_none), expected
+                )
+
     def test_parse_decimal_rejects_malformed_signs_and_separators(self):
         for mapping in (self.mock_mapping_comma_dot, self.mock_mapping_dot_comma):
             for value in ("--", "++", "-+", "+-", ".", ",", "-.", "+.", "-,", "+,"):
