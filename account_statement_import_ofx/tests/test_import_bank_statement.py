@@ -88,6 +88,27 @@ class TestOfxFile(common.TransactionCase):
             )[0]
             self.assertEqual(line.date, datetime.date(2013, 8, 24))
 
+    def test_ofx_payment_reference_uses_available_components(self):
+        path = "account_statement_import_ofx/tests/test_ofx_file/test_ofx.ofx"
+        with file_open(path, "rb") as source:
+            original = source.read()
+        cases = (
+            (b"<MEMO>Monthly fee</MEMO>", "Monthly fee"),
+            (b"<CHECKNUM>27</CHECKNUM>", "27"),
+            (
+                b"<NAME>Agrolait</NAME><CHECKNUM>27</CHECKNUM><MEMO>Invoice</MEMO>",
+                "Agrolait 27 : Invoice",
+            ),
+        )
+        for tags, expected in cases:
+            with self.subTest(expected=expected):
+                statement = original.replace(b"<NAME>Agrolait</NAME>", tags, 1)
+                _, _, statements = self.asi_model._parse_file(statement)[0]
+                line = statements[0]["transactions"][0]
+                self.assertEqual(line["unique_import_id"], "219378")
+                self.assertEqual(line["amount"], -80)
+                self.assertEqual(line["payment_ref"], expected)
+
     def test_overlapping_uploads_keep_new_lines_balances_and_source_files(self):
         path = "account_statement_import_ofx/tests/test_ofx_file/test_ofx.ofx"
         with file_open(path, "rb") as source:

@@ -33,11 +33,8 @@ class AccountStatementImport(models.TransientModel):
         # we cannot provide the key 'account_number'
         # If you read the code of the module account_statement_import_base
         # it's the only key we can provide to match a partner.
-        payment_ref = transaction.payee
-        if transaction.checknum:
-            payment_ref += " " + transaction.checknum
-        if transaction.memo:
-            payment_ref += " : " + transaction.memo
+        reference = " ".join(filter(None, (transaction.payee, transaction.checknum)))
+        payment_ref = " : ".join(filter(None, (reference, transaction.memo)))
         vals = {
             "date": transaction.date,
             "payment_ref": payment_ref,
