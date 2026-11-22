@@ -312,6 +312,50 @@ class TestAccountStatementImportSheetFile(Common):
         self.assertFalse(line.foreign_currency_id)
         self.assertEqual(line.amount_currency, 0.0)
 
+    def test_same_currency_fallback_preserves_amount_signs_and_opening_balance(self):
+        self.sample_statement_map.write(
+            {
+                "balance_column": "Balance",
+                "partner_name_column": False,
+                "bank_account_column": False,
+            }
+        )
+        data = (
+            b"Date,Label,Amount,Currency,Amount Currency,Balance\n"
+            b"09/01/2026,Deposit,,USD,45.00,745.00\n"
+            b"09/02/2026,Fee,,USD,-20.00,725.00\n"
+            b"09/03/2026,Adjustment,5.00,USD,99.00,730.00\n"
+            b"09/04/2026,Zero,0.00,USD,45.00,730.00\n"
+        )
+        _, _, statements = self.parser.with_context(journal_id=self.journal.id).parse(
+            data, self.sample_statement_map, "matching-currency.csv"
+        )
+        statement = statements[0]
+        self.assertEqual(statement["balance_start"], 700.0)
+        self.assertEqual(statement["balance_end_real"], 730.0)
+        transactions = statement["transactions"]
+        self.assertEqual(
+            [float(line["amount"]) for line in transactions], [45, -20, 5, 0]
+        )
+        self.assertFalse(any("foreign_currency_id" in line for line in transactions))
+
+    def test_same_currency_fallback_respects_the_debit_credit_indicator(self):
+        self.sample_statement_map.write(
+            {
+                "amount_type": "absolute_value",
+                "debit_credit_column": "Direction",
+                "partner_name_column": False,
+                "bank_account_column": False,
+            }
+        )
+        data = (
+            b"Date,Label,Amount,Currency,Amount Currency,Direction\n"
+            b"09/01/2026,Fee,,USD,20.00,D\n"
+            b"09/02/2026,Deposit,,USD,45.00,C\n"
+        )
+        lines = self.parser._parse_lines(self.sample_statement_map, data, "USD")
+        self.assertEqual([line["amount"] for line in lines], [-20.0, 45.0])
+
     def test_multi_currency(self):
         self.sample_statement_map.write(
             {
