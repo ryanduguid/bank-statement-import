@@ -91,6 +91,32 @@ class TestAccountStatementImportSheetFile(Common):
         with self.assertRaisesRegex(UserError, "Failed to parse file"):
             self.parser._parse_lines(self.sample_statement_map, b" \n \t\n \n", "USD")
 
+    def test_csv_defaults_to_utf8_when_encoding_is_cleared(self):
+        mapping = self.sample_statement_map
+        mapping.write(
+            {
+                "file_encoding": False,
+                "original_currency_column": False,
+                "original_amount_column": False,
+                "partner_name_column": False,
+                "bank_account_column": False,
+            }
+        )
+        data = "Date,Amount,Label\n09/01/2026,100,Café Zihuatanejo\n".encode()
+        lines = self.parser._parse_lines(mapping, data, "USD")
+        self.assertEqual([line["description"] for line in lines], ["Café Zihuatanejo"])
+
+    def test_undetected_csv_encoding_reports_decode_error(self):
+        with (
+            patch(
+                "odoo.addons.account_statement_import_sheet_file.models"
+                ".account_statement_import_sheet_parser.chardet.detect",
+                return_value={"encoding": None},
+            ),
+            self.assertRaises(UnicodeDecodeError),
+        ):
+            self.parser._parse_lines(self.sample_statement_map, b"\xff", "USD")
+
     def test_csv_preserves_transaction_audit_details(self):
         self.sample_statement_map.write(
             {
@@ -277,6 +303,17 @@ class TestAccountStatementImportSheetFile(Common):
         statement = self.AccountBankStatement.search(self.statement_domain)
         self.assertEqual(len(statement), 1)
         self.assertEqual(len(statement.line_ids), 2)
+
+    def test_import_legacy_xls_preserves_dates_amounts_and_currency(self):
+        wizard = self._get_import_wizard("fixtures/sample_statement_en.xls")
+        wizard.import_file_button()
+        statement = self.AccountBankStatement.search(self.statement_domain)
+        self.assertEqual(len(statement), 1)
+        lines = statement.line_ids.sorted("amount")
+        self.assertEqual(lines.mapped("amount"), [-33.50, 1525.0])
+        self.assertEqual(lines.mapped("date"), [datetime(2018, 12, 15).date()] * 2)
+        self.assertEqual(lines[1].foreign_currency_id, self.currency_eur)
+        self.assertEqual(lines[1].amount_currency, 1000.0)
 
     def test_import_empty_xlsx_file(self):
         wizard = self._get_import_wizard("fixtures/empty_statement_en.xlsx")

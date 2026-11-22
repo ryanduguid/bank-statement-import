@@ -6,6 +6,9 @@
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 
 from datetime import date
+from unittest.mock import patch
+
+from odoo.tools import file_open
 
 from .common import Common
 
@@ -30,8 +33,7 @@ class TestAccountStatementImportSheetFile(Common):
         )
 
     def test_html_wrappers_preserve_nested_cell_text(self):
-        from unittest.mock import patch
-
+        self.sample_statement_map.file_encoding = False
         for opening in (
             "<html>",
             '<!DOCTYPE html><html lang="en">',
@@ -39,22 +41,55 @@ class TestAccountStatementImportSheetFile(Common):
         ):
             document = (
                 opening + "<table><tr><th>Amount</th></tr>"
-                "<tr><td><span>100</span>.00</td></tr></table></html>"
+                "<tr><td><span>Café</span> 100.00</td></tr></table></html>"
             )
-            with (
-                self.subTest(opening=opening),
-                patch.object(
-                    type(self.parser), "_parse_data_csv", return_value=[]
-                ) as parse,
-            ):
-                self.parser._parse_data_html(
-                    self.sample_statement_map,
-                    document.encode(self.sample_statement_map.file_encoding),
+            with self.subTest(opening=opening):
+                records = self.parser._parse_data_html(
+                    self.sample_statement_map, document.encode()
                 )
-                self.assertIn(b"100.00", parse.call_args.args[-1])
+                self.assertEqual(list(records), [["Amount"], ["Café 100.00"]])
         self.assertIsNone(
             self.parser._parse_data_html(self.sample_statement_map, b"plain csv")
         )
         self.assertIsNone(
             self.parser._parse_data_html(self.sample_statement_map, b"<html></html>")
         )
+
+    def test_html_respects_configured_and_detected_encodings(self):
+        for configured, actual, label in (
+            ("windows-1252", "windows-1252", "Café"),
+            ("windows-1252", "utf-8", "Ё"),
+        ):
+            with self.subTest(actual=actual):
+                self.sample_statement_map.file_encoding = configured
+                html = (
+                    f"<html><table><tr><th>Label</th></tr>"
+                    f"<tr><td>{label}</td></tr></table></html>"
+                ).encode(actual)
+                with patch(
+                    "odoo.addons.account_statement_import_sheet_file.models"
+                    ".account_statement_import_sheet_parser.chardet.detect",
+                    return_value={"encoding": actual},
+                ) as detect:
+                    records = self.parser._parse_data_html(
+                        self.sample_statement_map, html
+                    )
+                self.assertEqual(list(records), [["Label"], [label]])
+                self.assertEqual(detect.call_count, int(configured != actual))
+
+    def test_html_decoder_does_not_prevent_legacy_xls_fallback(self):
+        self.sample_statement_map.file_encoding = "utf-8"
+        with file_open(
+            "account_statement_import_sheet_file/tests/fixtures/sample_statement_en.xls",
+            "rb",
+        ) as file:
+            data = file.read()
+        with patch(
+            "odoo.addons.account_statement_import_sheet_file.models"
+            ".account_statement_import_sheet_parser.chardet.detect",
+            return_value={"encoding": None},
+        ) as detect:
+            _book, sheet = self.parser._parse_data(self.sample_statement_map, data)
+        detect.assert_called_once_with(data)
+        self.assertEqual(sheet.row_values(0)[0], "Date")
+        self.assertEqual(sheet.nrows, 3)

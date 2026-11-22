@@ -209,25 +209,29 @@ class AccountStatementImportSheetParser(models.TransientModel):
     def _decode_data_file(self, data_file, encoding="utf-8"):
         """Decode `data_file` with `encoding`."""
         try:
-            decoded_file = data_file.decode(encoding)
+            return data_file.decode(encoding or "utf-8")
         except UnicodeDecodeError:
             # Try auto guessing the format
             detected_encoding = chardet.detect(data_file).get("encoding", False)
             if not detected_encoding:
                 _logger.debug("Failed decoding detection")
-            decoded_file = data_file.decode(detected_encoding)
-        return decoded_file
+                raise
+            return data_file.decode(detected_encoding)
 
     def _parse_data_csv(self, mapping, data_file):
-        csv_options = self._get_csv_options(mapping)
         decoded_file = self._decode_data_file(data_file, encoding=mapping.file_encoding)
+        return self._parse_csv_text(mapping, decoded_file)
+
+    def _parse_csv_text(self, mapping, decoded_file):
         content_end = len(decoded_file.rstrip())
         if not content_end:
             return None
         trailing_break = re.search(r"[\r\n]", decoded_file[content_end:])
         if trailing_break:
             decoded_file = decoded_file[: content_end + trailing_break.start()]
-        return reader(StringIO(decoded_file, newline=""), **csv_options)
+        return reader(
+            StringIO(decoded_file, newline=""), **self._get_csv_options(mapping)
+        )
 
     def _parse_data(self, mapping, data_file):
         """Try the available parsers for `data_file`.

@@ -22,31 +22,25 @@ class AccountStatementImportSheetParser(models.TransientModel):
         return parsers
 
     def _parse_data_html(self, mapping, data_file):
-        decoded_file = self._decode_data_file(data_file, encoding=mapping.file_encoding)
+        try:
+            decoded_file = self._decode_data_file(
+                data_file, encoding=mapping.file_encoding
+            )
+        except UnicodeDecodeError:
+            return None
         is_html = re.match(
             r"\s*(?:<!doctype\s+html\b[^>]*>\s*)?<html\b", decoded_file, re.I
         )
-        if is_html:
-            # Convert to CSV
-            rows = etree.HTML(decoded_file).xpath("//table//tr")
-            if not rows:
-                return None
+        if not is_html:
+            return None
+        rows = etree.HTML(decoded_file).xpath("//table//tr")
+        if not rows:
+            return None
 
-            csv_content_stream = StringIO()
-            csv_options = self._get_csv_options(mapping)
-            wr = writer(csv_content_stream, **csv_options)
-            wr.writerow(["".join(col.itertext()) for col in rows[0].xpath(".//th")])
-            wr.writerows(
-                [
-                    ["".join(col.itertext()) for col in row.xpath(".//td")]
-                    for row in rows[1:]
-                ]
-            )
-            decoded_file = csv_content_stream.getvalue()
-
-            # Parse as CSV
-            encoded_file = decoded_file.encode(mapping.file_encoding)
-            parsed_data = self._parse_data_csv(mapping, encoded_file)
-        else:
-            parsed_data = None
-        return parsed_data
+        csv_content_stream = StringIO()
+        wr = writer(csv_content_stream, **self._get_csv_options(mapping))
+        wr.writerow(["".join(col.itertext()) for col in rows[0].xpath(".//th")])
+        wr.writerows(
+            ["".join(col.itertext()) for col in row.xpath(".//td")] for row in rows[1:]
+        )
+        return self._parse_csv_text(mapping, csv_content_stream.getvalue())
