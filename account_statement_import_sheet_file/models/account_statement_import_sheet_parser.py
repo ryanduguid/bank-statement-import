@@ -221,11 +221,13 @@ class AccountStatementImportSheetParser(models.TransientModel):
     def _parse_data_csv(self, mapping, data_file):
         csv_options = self._get_csv_options(mapping)
         decoded_file = self._decode_data_file(data_file, encoding=mapping.file_encoding)
-        if decoded_file:
-            parsed_data = reader(StringIO(decoded_file), **csv_options)
-        else:
-            parsed_data = None
-        return parsed_data
+        content_end = len(decoded_file.rstrip())
+        if not content_end:
+            return None
+        trailing_break = re.search(r"[\r\n]", decoded_file[content_end:])
+        if trailing_break:
+            decoded_file = decoded_file[: content_end + trailing_break.start()]
+        return reader(StringIO(decoded_file, newline=""), **csv_options)
 
     def _parse_data(self, mapping, data_file):
         """Try the available parsers for `data_file`.
@@ -270,26 +272,23 @@ class AccountStatementImportSheetParser(models.TransientModel):
         return content_l[0]
 
     def _parse_rows(self, mapping, currency_code, data, columns):  # noqa: C901
-        csv_or_xlsx, data_file = data
-
-        # Get the numbers of rows of the file
-        if isinstance(csv_or_xlsx, Worksheet):
-            numrows = csv_or_xlsx.max_row
-        elif isinstance(csv_or_xlsx, tuple):
-            numrows = csv_or_xlsx[1].nrows
-        else:
-            numrows = len(str(data_file.strip()).split("\\n"))
-
+        csv_or_xlsx, _data_file = data
         label_line = mapping.header_lines_skip_count
-        footer_line = numrows - mapping.footer_lines_skip_count
-
-        if isinstance(csv_or_xlsx, tuple | Worksheet):
-            rows = range(label_line, footer_line)
+        footer_count = mapping.footer_lines_skip_count
+        if isinstance(csv_or_xlsx, Worksheet):
+            rows = range(label_line, csv_or_xlsx.max_row - footer_count)
+        elif isinstance(csv_or_xlsx, tuple):
+            rows = range(label_line, csv_or_xlsx[1].nrows - footer_count)
+        elif footer_count > 0:
+            # Look ahead by the footer size in CSV records, buffering only that tail.
+            records, lookahead = itertools.tee(csv_or_xlsx)
+            tail = itertools.islice(lookahead, footer_count, None)
+            rows = (row for row, _ in zip(records, tail, strict=False))
         else:
             rows = csv_or_xlsx
 
         lines = []
-        for index, row in enumerate(rows, label_line):
+        for row in rows:
             if isinstance(csv_or_xlsx, Worksheet):
                 values = [
                     cell.value if cell.value is not None else ""
@@ -306,8 +305,6 @@ class AccountStatementImportSheetParser(models.TransientModel):
                         cell_value = xldate_as_datetime(cell_value, book.datemode)
                     values.append(cell_value)
             else:
-                if index >= footer_line:
-                    continue
                 values = list(row)
             if mapping.skip_empty_lines and not any(values):
                 continue

@@ -63,6 +63,34 @@ class TestAccountStatementImportSheetFile(Common):
         self.assertEqual(len(statement), 1)
         self.assertEqual(len(statement.line_ids), 2)
 
+    def test_csv_footer_skip_counts_quoted_multiline_fields_as_one_record(self):
+        self.sample_statement_map.write(
+            {
+                "footer_lines_skip_count": 1,
+                "original_currency_column": False,
+                "original_amount_column": False,
+                "partner_name_column": False,
+                "bank_account_column": False,
+            }
+        )
+        data = (
+            b"Date,Amount,Label\n"
+            b'09/01/2026,100,"Deposit\ncontinued"\n'
+            b"09/02/2026,-12.50,Fee\n"
+            b"09/03/2026,999,Footer\n \t\n\n"
+        )
+        for csv_data in (data, data.rstrip()):
+            with self.subTest(csv_data=csv_data):
+                lines = self.parser._parse_lines(
+                    self.sample_statement_map, csv_data, "USD"
+                )
+                self.assertEqual([line["amount"] for line in lines], [100, -12.50])
+                self.assertEqual(lines[0]["description"], "Deposit\ncontinued")
+
+    def test_whitespace_only_csv_fails_as_an_empty_file(self):
+        with self.assertRaisesRegex(UserError, "Failed to parse file"):
+            self.parser._parse_lines(self.sample_statement_map, b" \n \t\n \n", "USD")
+
     def test_csv_preserves_transaction_audit_details(self):
         self.sample_statement_map.write(
             {
