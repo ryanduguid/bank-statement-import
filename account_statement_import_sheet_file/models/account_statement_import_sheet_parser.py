@@ -566,14 +566,10 @@ class AccountStatementImportSheetParser(models.TransientModel):
             r"[^\d\-+" + re.escape(thousands) + re.escape(decimal) + "]+", "", value
         )
         value = value.replace(thousands, "")
-        float_separator = "."
         if decimal:
-            value = value.replace(decimal, float_separator)
-        else:
-            journal = self.env["account.journal"].browse(
-                self.env.context.get("journal_id")
-            )
-            currency = journal.currency_id or journal.company_id.currency_id
-            decimal_places = currency.decimal_places if currency else 2
-            value = value[:-decimal_places] + float_separator + value[-decimal_places:]
-        return float(value)
+            return float(value.replace(decimal, "."))
+
+        journal = self.env["account.journal"].browse(self.env.context.get("journal_id"))
+        currency = journal.currency_id or journal.company_id.currency_id
+        decimal_places = currency.decimal_places if currency else 2
+        return float(f"{value}e-{decimal_places}")
