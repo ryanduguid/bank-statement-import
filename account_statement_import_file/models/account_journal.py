@@ -12,8 +12,12 @@ class AccountJournal(models.Model):
     @api.model
     def default_get(self, fields_list):
         res = super().default_get(fields_list)
-        formats_list = self._get_bank_statements_available_import_formats()
-        if formats_list:
+        if (
+            "bank_statements_source" in fields_list
+            and "default_bank_statements_source" not in self.env.context
+            and res.get("bank_statements_source", "undefined") == "undefined"
+            and self._get_bank_statements_available_import_formats()
+        ):
             res["bank_statements_source"] = "file_import_oca"
         return res
 
@@ -25,8 +29,7 @@ class AccountJournal(models.Model):
         rslt = super().__get_bank_statements_available_sources()
         formats_list = self._get_bank_statements_available_import_formats()
         if formats_list:
-            formats_list.sort()
-            import_formats_str = ", ".join(formats_list)
+            import_formats_str = ", ".join(sorted(formats_list))
             rslt.insert(
                 0,
                 (

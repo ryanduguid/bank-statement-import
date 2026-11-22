@@ -2,6 +2,7 @@
 # License AGPL-3 - See http://www.gnu.org/licenses/agpl-3.0.html
 
 import base64
+from unittest import mock
 
 import odoo.tests.common as common
 from odoo.exceptions import UserError
@@ -45,6 +46,46 @@ class TestAccountStatementImportFile(common.TransactionCase):
             .with_context(journal_id=cls.journal_1.id)
             .create({"statement_file": file, "statement_filename": "Test"})
         )
+
+    def test_import_source_default_preserves_requested_fields_and_context(self):
+        journals = self.env["account.journal"]
+        source = "bank_statements_source"
+        with mock.patch.object(
+            type(journals),
+            "_get_bank_statements_available_import_formats",
+            return_value=[],
+        ):
+            self.assertEqual(journals.default_get([source])[source], "undefined")
+        with mock.patch.object(
+            type(journals),
+            "_get_bank_statements_available_import_formats",
+            return_value=["OFX"],
+        ) as formats:
+            self.assertNotIn(source, journals.default_get(["name"]))
+            default = journals.with_context(default_bank_statements_source=False)
+            self.assertFalse(default.default_get([source])[source])
+            formats.assert_not_called()
+            self.assertEqual(journals.default_get([source])[source], "file_import_oca")
+            self.env["ir.default"].set(
+                "account.journal", source, False, user_id=self.env.uid
+            )
+            formats.reset_mock()
+            self.assertFalse(journals.default_get([source])[source])
+            formats.assert_not_called()
+
+    def test_import_action_and_format_listing_preserve_the_journal(self):
+        formats = ["Text", "OFX"]
+        with mock.patch.object(
+            type(self.journal_1),
+            "_get_bank_statements_available_import_formats",
+            return_value=formats,
+        ):
+            sources = dict(self.journal_1._get_bank_statements_available_sources())
+        self.assertIn("OFX, Text", sources["file_import_oca"])
+        self.assertEqual(formats, ["Text", "OFX"])
+        action = self.journal_1.import_account_statement()
+        self.assertEqual(action["res_model"], "account.statement.import")
+        self.assertEqual(action["context"]["journal_id"], self.journal_1.id)
 
     def test_complete_stmts_vals(self):
         # ERROR: Missing payment_ref on a transaction.
