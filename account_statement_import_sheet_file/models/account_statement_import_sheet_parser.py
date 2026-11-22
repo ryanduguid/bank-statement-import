@@ -321,18 +321,25 @@ class AccountStatementImportSheetParser(models.TransientModel):
                 else currency_code
             )
 
-            def _decimal(column_name, values):
-                if columns[column_name]:
-                    return self._parse_decimal(
-                        self._get_values_from_column(values, columns, column_name),
-                        mapping,
-                    )
+            def _decimal(value):
+                if value is not None:
+                    return self._parse_decimal(value, mapping)
 
-            amount = _decimal("amount_column", values)
+            amount_column, debit_column, credit_column = (
+                self._get_values_from_column(values, columns, column)
+                if columns[column]
+                else None
+                for column in (
+                    "amount_column",
+                    "amount_debit_column",
+                    "amount_credit_column",
+                )
+            )
+            amount = _decimal(amount_column)
             if not amount:
-                amount = abs(_decimal("amount_debit_column", values) or 0)
+                amount = abs(_decimal(debit_column) or 0)
             if not amount:
-                amount = -abs(_decimal("amount_credit_column", values) or 0)
+                amount = -abs(_decimal(credit_column) or 0)
 
             balance = (
                 self._get_values_from_column(values, columns, "balance_column")
@@ -392,18 +399,6 @@ class AccountStatementImportSheetParser(models.TransientModel):
                 else None
             )
 
-            debit_column = (
-                self._get_values_from_column(values, columns, "amount_debit_column")
-                if columns["amount_debit_column"]
-                else None
-            )
-
-            credit_column = (
-                self._get_values_from_column(values, columns, "amount_credit_column")
-                if columns["amount_credit_column"]
-                else None
-            )
-
             if currency != currency_code:
                 continue
 
@@ -434,9 +429,24 @@ class AccountStatementImportSheetParser(models.TransientModel):
                 amount = -(credit_amount - debit_amount)
 
             if original_amount:
-                original_amount = math.copysign(
-                    self._parse_decimal(original_amount, mapping), amount
-                )
+                original_amount = self._parse_decimal(original_amount, mapping)
+                if (
+                    original_amount
+                    and not amount
+                    and original_currency == currency
+                    and not any(
+                        re.search(r"\d", str(value))
+                        for value in (amount_column, debit_column, credit_column)
+                    )
+                ):
+                    amount = original_amount
+                    if debit_credit is not None:
+                        amount = (
+                            -abs(amount)
+                            if debit_credit == mapping.debit_value
+                            else abs(amount)
+                        )
+                original_amount = math.copysign(original_amount, amount)
             else:
                 original_amount = 0.0
             if mapping.amount_inverse_sign:
@@ -487,16 +497,13 @@ class AccountStatementImportSheetParser(models.TransientModel):
         bank_name = line.get("bank_name")
         bank_account = line.get("bank_account")
 
+        if original_currency == currency:
+            original_currency = None
+
         transaction = {
             "date": timestamp,
             "amount": str(amount),
         }
-
-        if original_currency == currency:
-            original_currency = None
-            if not amount:
-                amount = original_amount
-            original_amount = "0.0"
 
         if original_currency:
             original_currency = self.env["res.currency"].search(
