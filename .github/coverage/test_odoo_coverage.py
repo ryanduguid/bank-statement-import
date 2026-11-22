@@ -487,41 +487,26 @@ class LifecycleTests(unittest.TestCase):
     def test_host_result_completion_race_keeps_the_original_collection_error(self):
         for major in (18, 19):
             with self.subTest(major=major):
-                ready = threading.Event()
-                completed = threading.Event()
-
                 class ConcurrentCompletion(Future):
-                    def set_exception(self, error, *, ready=ready, completed=completed):
-                        ready.set()
-                        if not completed.wait(5):
-                            raise TimeoutError("Native result did not complete")
+                    def set_exception(self, error):
+                        # Complete the host result just after the collector's done check.
+                        self.set_result("native result")
                         super().set_exception(error)
 
                 browser = self.browser(major)
                 result = browser._result = ConcurrentCompletion()
                 first = browser.send_error = RuntimeError("transport failed")
 
-                def finish(ready=ready, completed=completed, result=result):
-                    if ready.wait(5):
-                        result.set_result("native result")
-                        completed.set()
-
-                thread = threading.Thread(target=finish)
-                thread.start()
-                try:
-                    browser._handlers["Target.attachedToTarget"](
-                        sessionId="frame",
-                        targetInfo={"type": "iframe"},
-                        waitingForDebugger=True,
-                    )
-                    self.assertEqual(result.result(timeout=5), "native result")
-                    with self.assertRaises(RuntimeError) as raised:
-                        browser.stop()
-                    self.assertIs(raised.exception, first)
-                    self.assertTrue(browser.closed)
-                finally:
-                    thread.join(5)
-                self.assertFalse(thread.is_alive())
+                browser._handlers["Target.attachedToTarget"](
+                    sessionId="frame",
+                    targetInfo={"type": "iframe"},
+                    waitingForDebugger=True,
+                )
+                self.assertEqual(result.result(timeout=5), "native result")
+                with self.assertRaises(RuntimeError) as raised:
+                    browser.stop()
+                self.assertIs(raised.exception, first)
+                self.assertTrue(browser.closed)
 
     def test_failed_evaluation_is_incomplete_and_still_closes_the_browser(self):
         for major in (18, 19):
