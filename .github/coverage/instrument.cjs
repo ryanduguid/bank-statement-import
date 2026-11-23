@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
+const { execFileSync } = require('node:child_process');
 const { createInstrumenter, readInitialCoverage } = require('istanbul-lib-instrument');
 
 const inventory = {
@@ -20,6 +21,9 @@ const inventory = {
     'account_statement_import_online_plaid/static/src/js/plaid_integration.esm.js',
   ],
 };
+const tooling = new Set(['eslint.config.cjs', 'prettier.config.cjs',
+  '.github/coverage/instrument.cjs', '.github/coverage/merge.cjs',
+  '.github/coverage/test-instrumentation.cjs']);
 const digest = data => createHash('sha256').update(data).digest('hex');
 
 function ownedFile(root, relative) {
@@ -59,6 +63,14 @@ function prepare(relative, original) {
   } };
 }
 
+// Every tracked browser asset outside tests and tooling must be in the inventory.
+function checkInventory(repository, root) {
+  const tracked = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean);
+  const assets = tracked.filter(file => /\.(?:[cm]?js|es6)$/.test(file)
+    && !file.split('/').includes('tests') && !tooling.has(file));
+  assert.deepEqual(assets.sort(), [...inventory[repository]].sort(), 'Browser asset inventory changed');
+}
+
 function instrument(repository, root, destination) {
   assert(Object.hasOwn(inventory, repository), 'Unknown repository');
   root = fs.realpathSync(root);
@@ -81,4 +93,4 @@ if (require.main === module) {
   assert.equal(process.argv.length, 5, 'Usage: instrument.cjs repository source-root receipt-directory');
   instrument(...process.argv.slice(2));
 }
-module.exports = { instrument, inventory, prepare, ownedFile, digest };
+module.exports = { checkInventory, instrument, inventory, prepare, ownedFile, digest };
