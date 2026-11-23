@@ -89,6 +89,7 @@ class TestGenerateBankStatement(TransactionCase):
             .replace(b"</Ntfctn>", b"</Stmt>")
         )
         document = etree.fromstring(content)
+        self._set_blank_remittance_with_labels(document)
         entry = document.find(".//{*}Stmt")
         namespace = etree.QName(entry).namespace
         entry.find("{*}Id").text = "Synthetic CAMT closing"
@@ -115,6 +116,9 @@ class TestGenerateBankStatement(TransactionCase):
         )
         self.assertEqual(len(statement), 1)
         self.assertEqual(statement.line_ids.mapped("amount"), [5.0])
+        self.assertEqual(
+            statement.line_ids.payment_ref, "Secondary bank note (98888208N8)"
+        )
         self.assertEqual(statement.balance_end_real, 15.0)
 
     def _parse_camt54_transaction(self, document):
@@ -147,3 +151,27 @@ class TestGenerateBankStatement(TransactionCase):
         self.assertEqual(transaction["payment_ref"], "000000000000000000000000003")
         self.assertEqual(transaction["partner_ref"], "3")
         self.assertEqual(transaction["ref"], "98888208N8")
+
+    def test_blank_remittance_uses_the_transaction_instruction_id(self):
+        self.env["ir.config_parameter"].set_param("qrr_partner_ref", "27,1")
+        document = self._camt54_document()
+        self._set_blank_remittance_with_labels(document)
+
+        transaction = self._parse_camt54_transaction(document)
+        self.assertEqual(transaction["payment_ref"], "Instruction 73 (98888208N8)")
+        self.assertNotIn("partner_ref", transaction)
+
+        document.find(".//{*}Ntry/{*}AcctSvcrRef").text = None
+        transaction = self._parse_camt54_transaction(document)
+        self.assertEqual(transaction["payment_ref"], "Instruction 73")
+
+    def _set_blank_remittance_with_labels(self, document):
+        details = document.find(".//{*}TxDtls")
+        namespace = etree.QName(details).namespace
+        remittance = details.find("{*}RmtInf")
+        remittance.find(".//{*}CdtrRefInf/{*}Ref").text = None
+        etree.SubElement(remittance, f"{{{namespace}}}Ustrd").text = "  "
+        details.find("{*}Refs/{*}InstrId").text = "Instruction 73"
+        etree.SubElement(
+            details, f"{{{namespace}}}AddtlTxInf"
+        ).text = "Secondary bank note"
