@@ -285,26 +285,19 @@ class OnlineBankStatementProvider(models.Model):
         if not data:
             data = ([], {})
         unfiltered_lines, statement_values = data
-        if not unfiltered_lines:
-            unfiltered_lines = []
-        if not statement_values:
-            statement_values = {}
+        statement_values = dict(statement_values or {})
         statement_values["name"] = self.make_statement_name(statement_date_since)
         filtered_lines = self._get_statement_filtered_lines(
-            unfiltered_lines,
+            unfiltered_lines or [],
             statement_values,
             statement_date_since,
             statement_date_until,
         )
         if not filtered_lines:
             return self.env["account.bank.statement"]
-        if filtered_lines:
-            statement_values.update(
-                {"line_ids": [[0, False, line] for line in filtered_lines]}
-            )
+        statement_values["line_ids"] = [[0, False, line] for line in filtered_lines]
         self._update_statement_balances(statement_values)
-        statement = self._statement_create_or_write(statement_values)
-        return statement
+        return self._statement_create_or_write(statement_values)
 
     def make_statement_name(self, statement_date_since):
         """Make name for statement using date and journal name."""
@@ -364,10 +357,10 @@ class OnlineBankStatementProvider(models.Model):
         provider_tz = timezone(self.tz) if self.tz else utc
         journal = self.journal_id
         speeddict = journal._statement_line_import_speeddict()
-        filtered_lines = []
+        candidate_lines = []
+        import_ids = set()
         lines_before_since = 0
         lines_after_until = 0
-        lines_not_unique = 0
         for line_values in unfiltered_lines:
             date = line_values["date"]
             if not isinstance(date, datetime):
@@ -391,20 +384,33 @@ class OnlineBankStatementProvider(models.Model):
                 continue
             date = date.replace(tzinfo=utc)
             date = date.astimezone(provider_tz).replace(tzinfo=None)
-            line_values["date"] = date
+            line_values = dict(line_values, date=date)
             journal._statement_line_import_update_unique_import_id(
                 line_values, self.account_number
             )
             unique_import_id = line_values.get("unique_import_id")
             if unique_import_id:
-                if AccountBankStatementLine.sudo().search(
-                    [("unique_import_id", "=", unique_import_id)], limit=1
-                ):
-                    lines_not_unique += 1
-                    continue
+                import_ids.add(unique_import_id)
+            candidate_lines.append(line_values)
+
+        seen_ids = set()
+        if import_ids:
+            existing = AccountBankStatementLine.sudo().search_read(
+                [("unique_import_id", "in", list(import_ids))], ["unique_import_id"]
+            )
+            seen_ids.update(line["unique_import_id"] for line in existing)
+        filtered_lines = []
+        lines_not_unique = 0
+        for line_values in candidate_lines:
+            unique_import_id = line_values.get("unique_import_id")
+            if unique_import_id in seen_ids:
+                lines_not_unique += 1
+                continue
+            if unique_import_id:
+                seen_ids.add(unique_import_id)
             if not line_values.get("payment_ref"):
                 line_values["payment_ref"] = line_values.get("ref")
-            line_values["journal_id"] = self.journal_id.id
+            line_values["journal_id"] = journal.id
             journal._statement_line_import_update_hook(line_values, speeddict)
             filtered_lines.append(line_values)
         if unfiltered_lines:
