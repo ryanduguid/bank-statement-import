@@ -3,6 +3,7 @@
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 
 import json
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest import mock
@@ -981,48 +982,52 @@ class TestAccountBankAccountStatementImportOnlinePayPal(common.TransactionCase):
                 )
                 retrieve.assert_called_once()
 
-    def test_balance_lookups_use_single_or_distinct_transactions(self):
+    def _balance_provider(self):
         journal = self.AccountJournal.create(
             {"name": "Synthetic PayPal", "code": "PST", "type": "bank"}
         )
-        provider = self.OnlineBankStatementProvider.new(
+        return self.OnlineBankStatementProvider.new(
             {"service": "paypal", "journal_id": journal.id}
         )
-        date = self.today
-        transaction_id = "fabricated-transaction"
-        first_transaction = {
-            "transaction_info": {
-                "transaction_id": transaction_id,
-                "transaction_updated_date": date,
-                "transaction_amount": {"value": "7.50"},
-                "fee_amount": {"value": "-0.25"},
-                "available_balance": {"value": "120.00"},
-            }
-        }
-        last_date = date + timedelta(hours=1)
-        last_transaction = {
-            "transaction_info": {
-                "transaction_id": "fabricated-last",
-                "transaction_updated_date": last_date,
-                "transaction_amount": {"value": "20.00"},
-                "available_balance": {"value": "140.00"},
-            },
-        }
-        offset = timedelta(hours=10)
-        since = date.replace(tzinfo=timezone(offset))
-        until = since + timedelta(days=1)
+
+    @contextmanager
+    def _mock_statement_balances(self, entries, balance_entries):
         with (
             mock.patch(
                 _provider_class + "._paypal_get_token", return_value="synthetic"
             ),
             mock.patch(
                 _provider_class + "._paypal_get_transactions",
-                return_value=[first_transaction],
+                return_value=entries,
             ) as transactions,
             mock.patch(
                 _provider_class + "._paypal_get_transaction",
-                return_value=first_transaction,
+                side_effect=balance_entries,
             ) as lookup,
+        ):
+            yield transactions, lookup
+
+    def _first_balance_transaction(self):
+        return {
+            "transaction_info": {
+                "transaction_id": "fabricated-transaction",
+                "transaction_updated_date": self.today,
+                "transaction_amount": {"value": "7.50"},
+                "fee_amount": {"value": "-0.25"},
+                "available_balance": {"value": "120.00"},
+            }
+        }
+
+    def test_balance_lookup_reuses_single_transaction(self):
+        date = self.today
+        offset = timedelta(hours=10)
+        since = date.replace(tzinfo=timezone(offset))
+        until = since + timedelta(days=1)
+        first = self._first_balance_transaction()
+        provider = self._balance_provider()
+        with self._mock_statement_balances([first], [first]) as (
+            transactions,
+            lookup,
         ):
             lines, balances = provider._obtain_statement_data(since, until)
             transactions.assert_called_once_with(
@@ -1031,21 +1036,7 @@ class TestAccountBankAccountStatementImportOnlinePayPal(common.TransactionCase):
                 date - offset,
                 date + timedelta(days=1) - offset,
             )
-            lookup.assert_called_once_with("synthetic", transaction_id, date)
-
-            transactions.return_value = [last_transaction, first_transaction]
-            lookup.reset_mock()
-            lookup.side_effect = [first_transaction, last_transaction]
-            multiple_lines, multiple_balances = provider._obtain_statement_data(
-                since, until
-            )
-            self.assertEqual(
-                lookup.call_args_list,
-                [
-                    mock.call("synthetic", transaction_id, date),
-                    mock.call("synthetic", "fabricated-last", last_date),
-                ],
-            )
+            lookup.assert_called_once_with("synthetic", "fabricated-transaction", date)
         self.assertEqual(
             balances,
             {
@@ -1054,13 +1045,42 @@ class TestAccountBankAccountStatementImportOnlinePayPal(common.TransactionCase):
             },
         )
         self.assertEqual([line["amount"] for line in lines], ["7.50", "-0.25"])
-        self.assertEqual(lines[0]["payment_ref"], transaction_id)
+        self.assertEqual(lines[0]["payment_ref"], "fabricated-transaction")
         self.assertNotIn("partner_name", lines[0])
+
+    def _last_balance_transaction(self):
+        return {
+            "transaction_info": {
+                "transaction_id": "fabricated-last",
+                "transaction_updated_date": self.today + timedelta(hours=1),
+                "transaction_amount": {"value": "20.00"},
+                "available_balance": {"value": "140.00"},
+            },
+        }
+
+    def test_balance_lookups_follow_transaction_order(self):
+        date = self.today
+        last_date = date + timedelta(hours=1)
+        first = self._first_balance_transaction()
+        last = self._last_balance_transaction()
+        provider = self._balance_provider()
+        with self._mock_statement_balances([last, first], [first, last]) as (
+            _transactions,
+            lookup,
+        ):
+            lines, balances = provider._obtain_statement_data(
+                date, date + timedelta(days=1)
+            )
         self.assertEqual(
-            [line["amount"] for line in multiple_lines], ["7.50", "-0.25", "20.00"]
+            lookup.call_args_list,
+            [
+                mock.call("synthetic", "fabricated-transaction", date),
+                mock.call("synthetic", "fabricated-last", last_date),
+            ],
         )
+        self.assertEqual([line["amount"] for line in lines], ["7.50", "-0.25", "20.00"])
         self.assertEqual(
-            multiple_balances,
+            balances,
             {
                 "balance_start": Decimal("112.75"),
                 "balance_end_real": Decimal("140.00"),
@@ -1086,3 +1106,26 @@ class TestAccountBankAccountStatementImportOnlinePayPal(common.TransactionCase):
         transaction["payer_info"] = {"payer_name": {"email_address": email}}
         line = provider._paypal_transaction_to_lines(transaction)[0]
         self.assertEqual(line["payment_ref"], f"{transaction_id} ({email})")
+
+    def test_missing_balance_transaction_stops_the_import(self):
+        first = self._first_balance_transaction()
+        last = self._last_balance_transaction()
+        provider = self._balance_provider()
+        for missing, balance_entries in (
+            ("fabricated-transaction", [None]),
+            ("fabricated-last", [first, None]),
+        ):
+            with (
+                self.subTest(missing=missing),
+                self._mock_statement_balances([last, first], balance_entries) as (
+                    _transactions,
+                    lookup,
+                ),
+                self.assertRaisesRegex(
+                    UserError, f"Failed to resolve transaction {missing}"
+                ),
+            ):
+                provider._obtain_statement_data(
+                    self.today, self.today + timedelta(days=1)
+                )
+            self.assertEqual(lookup.call_count, len(balance_entries))
