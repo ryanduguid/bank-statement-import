@@ -377,6 +377,40 @@ class TestAccountStatementImportOnlinePonto(common.TransactionCase):
                 self.assertNotIn("account_number", values)
                 self.assertNotIn("partner_name", values)
 
+    def test_invalid_nonterminal_identifier_cannot_advance_the_checkpoint(self):
+        first, terminal = FOUR_TRANSACTIONS[:2]
+        self.provider.ponto_last_identifier = "previously-imported"
+        provider = self.provider.with_context(scheduled=True)
+        date_since = fields.Datetime.to_datetime("2019-09-25")
+        date_until = fields.Datetime.to_datetime("2019-11-18")
+        for invalid in (None, " ", 12):
+            with (
+                self.subTest(invalid=invalid),
+                self.mock_login(),
+                self.mock_set_access_account(),
+                mock.patch(
+                    _interface_class + "._get_transactions",
+                    return_value=[dict(first, id=invalid), terminal],
+                ) as retrieve,
+                self.assertRaisesRegex(UserError, "transaction without an identifier"),
+            ):
+                provider._pull(date_since, date_until)
+            retrieve.assert_called_once()
+            self.assertEqual(provider.ponto_last_identifier, "previously-imported")
+            self._get_statements_from_journal(expected_count=0)
+
+    def test_no_transactions_keeps_the_existing_checkpoint(self):
+        self.provider.ponto_last_identifier = "previously-imported"
+        provider = self.provider.with_context(scheduled=True)
+        with (
+            self.mock_login(),
+            self.mock_set_access_account(),
+            mock.patch(_interface_class + "._get_transactions", return_value=[]),
+        ):
+            provider._pull(datetime(2019, 9, 25), datetime(2019, 11, 18))
+        self.assertEqual(provider.ponto_last_identifier, "previously-imported")
+        self._get_statements_from_journal(expected_count=0)
+
     def test_ponto_scheduled(self):
         with (
             self.mock_login(),

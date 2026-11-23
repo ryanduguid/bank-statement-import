@@ -932,16 +932,15 @@ class TestAccountBankAccountStatementImportOnlinePayPal(common.TransactionCase):
             "name": "INVALID_REQUEST",
             "message": "Request is not well-formed, syntactically "
             "incorrect, or violates schema.",
-            # so that the page cycle ends correctly
-            "total_pages": 0,
         }
         since = self.now - relativedelta(hours=1)
         until = self.now
         with mock.patch(
             _provider_class + "._paypal_retrieve",
             return_value=mocked_payload,
-        ):
+        ) as retrieve:
             tx = provider._paypal_get_transactions("--TOKEN--", "EUR", since, until)
+            retrieve.assert_called_once()
         self.assertEqual(tx, [])
 
     def test_paypal_format_datetime(self):
@@ -1045,6 +1044,22 @@ class TestAccountBankAccountStatementImportOnlinePayPal(common.TransactionCase):
                 "available_balance": {"value": "120.00"},
             }
         }
+
+    def test_no_reported_balance_rejects_an_empty_statement(self):
+        provider = self._balance_provider()
+        provider.journal_id.currency_id = self.currency_eur
+        since = self.today - timedelta(hours=1)
+        for payload in ({}, {"balances": []}):
+            with (
+                self.subTest(payload=payload),
+                self.mock_token(),
+                mock.patch(
+                    _provider_class + "._paypal_retrieve",
+                    side_effect=[{"transaction_details": []}, payload],
+                ),
+                self.assertRaisesRegex(UserError, "did not return a balance for EUR"),
+            ):
+                provider._obtain_statement_data(since, self.today)
 
     def test_balance_lookup_reuses_single_transaction(self):
         date = self.today

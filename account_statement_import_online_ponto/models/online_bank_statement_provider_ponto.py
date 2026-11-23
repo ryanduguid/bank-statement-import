@@ -135,6 +135,10 @@ class OnlineBankStatementProvider(models.Model):
             seen_identifiers.add(latest_identifier)
             for line in transactions:
                 identifier = line.get("id")
+                if not isinstance(identifier, str) or not identifier.strip():
+                    raise UserError(
+                        _("Ponto returned a transaction without an identifier.")
+                    )
                 transaction_datetime = self._ponto_get_transaction_datetime(line)
                 if is_scheduled:
                     # Handle all stop conditions for scheduled runs.
