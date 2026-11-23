@@ -21,9 +21,14 @@ class AccountStatementImport(models.TransientModel):
         except ValueError:
             try:
                 with zipfile.ZipFile(BytesIO(data_file)) as data:
+                    members = [
+                        member for member in data.infolist() if not member.is_dir()
+                    ]
+                    if not members:
+                        raise ValueError("The archive contains no statement files.")
                     grouped = {}
-                    for member in data.namelist():
-                        parsed = self._parse_file(data.open(member).read())
+                    for member in members:
+                        parsed = self._parse_file(data.read(member))
                         triplets = parsed if isinstance(parsed, list) else [parsed]
                         for currency, account_number, statements in triplets:
                             # Keep each member's own account and currency; only
@@ -32,9 +37,6 @@ class AccountStatementImport(models.TransientModel):
                                 statements
                             )
                 return parser.group_statements(grouped)
-            # pylint: disable=except-pass
             except (zipfile.BadZipFile, ValueError):
-                _logger.exception("BadZipfile exception")
-            # Not a camt file, returning super will call next candidate:
-            _logger.debug("Statement file was not a camt file.", exc_info=True)
+                _logger.debug("Statement file was not a CAMT file.", exc_info=True)
         return super()._parse_file(data_file)

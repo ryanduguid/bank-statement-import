@@ -1,16 +1,11 @@
 import io
 import logging
+from importlib import import_module
 
 from odoo import _, api, models
 from odoo.exceptions import UserError
 
 _logger = logging.getLogger(__name__)
-
-try:
-    from ofxparse import OfxParser
-except ImportError:
-    _logger.debug("ofxparse not found.")
-    OfxParser = None
 
 
 class AccountStatementImport(models.TransientModel):
@@ -18,10 +13,13 @@ class AccountStatementImport(models.TransientModel):
 
     @api.model
     def _check_ofx(self, data_file):
-        if not OfxParser:
+        try:
+            ofxparse = import_module("ofxparse")
+        except ImportError:
+            _logger.debug("ofxparse not found.")
             return False
         try:
-            ofx = OfxParser.parse(io.BytesIO(data_file))
+            ofx = ofxparse.OfxParser.parse(io.BytesIO(data_file))
         except Exception as e:
             _logger.debug(e)
             return False
