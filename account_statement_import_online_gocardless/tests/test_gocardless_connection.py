@@ -193,6 +193,7 @@ class TestGocardlessConnection(HttpCase):
             self.assertIn("is successfully attached", str(added.body))
 
     def test_unmatched_callback_resets_the_requisition_and_records_the_reason(self):
+        self.donor.gocardless_account_id = "fabricated-stale-account"
         for key in (
             "accounts/fabricated-account-one/",
             "accounts/fabricated-account-two/",
@@ -204,6 +205,7 @@ class TestGocardlessConnection(HttpCase):
         self.assertFalse(self.donor.gocardless_requisition_ref)
         self.assertFalse(self.donor.gocardless_requisition_id)
         self.assertFalse(self.donor.gocardless_requisition_expiration)
+        self.assertFalse(self.donor.gocardless_account_id)
         added = self.donor.message_ids - messages
         self.assertEqual(len(added), 1)
         self.assertIn("account numbers found", str(added.body))

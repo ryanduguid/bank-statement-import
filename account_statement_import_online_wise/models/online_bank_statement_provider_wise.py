@@ -13,6 +13,7 @@ from urllib.error import HTTPError
 
 import dateutil.parser
 import pytz
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
@@ -322,8 +323,8 @@ class OnlineBankStatementProviderWise(models.Model):
                 )
                 .decode()
             )
-        except BaseException as exception:
-            _logger.warning("Unable to parse key", exc_info=True)
+        except (TypeError, ValueError, UnsupportedAlgorithm) as exception:
+            _logger.warning("Unable to parse Wise certificate key")
             raise UserError(_("Unable to parse key")) from exception
 
     def _wise_generate_key(self):
