@@ -315,6 +315,42 @@ class TestAccountBankAccountStatementImportOnlineGocardless(common.TransactionCa
             res = self.provider._gocardless_finish_requisition(dry=True)
             self.assertTrue(res, "Bank account not found!")
 
+    def test_requisition_skips_accounts_without_an_iban(self):
+        matching_account = dict(
+            self.request_account_value, iban="nl77 abna 0574 9087 65"
+        )
+        with (
+            self.mock_requisition() as requisition,
+            self.mock_account() as account,
+            self.mock_agreement(),
+        ):
+            requisition.return_value = dict(
+                self.request_requisition_value,
+                accounts=["OTHER-ACCOUNT", "ACCOUNT-ID-1"],
+            )
+            account.side_effect = [
+                {"id": "OTHER-ACCOUNT", "iban": None},
+                matching_account,
+            ]
+            self.assertTrue(self.provider._gocardless_finish_requisition(dry=True))
+        self.assertEqual(self.provider.gocardless_account_id, "ACCOUNT-ID-1")
+
+    def test_unaccepted_agreement_keeps_the_current_account(self):
+        current_account = self.provider.gocardless_account_id
+        current_expiration = self.provider.gocardless_requisition_expiration
+        with (
+            self.mock_requisition(),
+            self.mock_account(),
+            self.mock_agreement() as agreement,
+        ):
+            agreement.return_value = dict(self.request_agreement_value, accepted=None)
+            with self.assertRaisesRegex(UserError, "has not been accepted"):
+                self.provider._gocardless_finish_requisition(dry=True)
+        self.assertEqual(self.provider.gocardless_account_id, current_account)
+        self.assertEqual(
+            self.provider.gocardless_requisition_expiration, current_expiration
+        )
+
     def _http_transaction_response(self, status):
         response = requests.Response()
         response.status_code = status

@@ -250,26 +250,36 @@ class OnlineBankStatementProvider(models.Model):
         self.ensure_one()
         requisition_data = self._gocardless_request_requisition()
         accounts = requisition_data.get("accounts", [])
-        found_account = False
+        matched_account_id = False
         accounts_iban = []
+        journal_iban = self.journal_id.bank_account_id.sanitized_acc_number
         for account_id in accounts:
             account_data = self._gocardless_request_account(account_id)
-            if account_data:
-                accounts_iban.append(account_data["iban"])
-                if (
-                    self.journal_id.bank_account_id.sanitized_acc_number
-                    == account_data["iban"].upper()
-                ):
-                    found_account = True
-                    self.gocardless_account_id = account_data["id"]
-                    break
-        if found_account:
+            iban = (account_data or {}).get("iban")
+            if not iban:
+                continue
+            accounts_iban.append(iban)
+            if journal_iban == sanitize_account_number(iban):
+                matched_account_id = account_data["id"]
+                break
+        if matched_account_id:
             agreement_data = self._gocardless_request_agreement(
                 requisition_data["agreement"]
             )
-            self.gocardless_requisition_expiration = datetime.strptime(
-                agreement_data["accepted"], "%Y-%m-%dT%H:%M:%S.%fZ"
+            accepted = agreement_data.get("accepted")
+            if not accepted:
+                raise UserError(
+                    _("The GoCardless agreement has not been accepted yet.")
+                )
+            expiration = datetime.strptime(
+                accepted, "%Y-%m-%dT%H:%M:%S.%fZ"
             ) + relativedelta(days=agreement_data["access_valid_for_days"])
+            self.write(
+                {
+                    "gocardless_account_id": matched_account_id,
+                    "gocardless_requisition_expiration": expiration,
+                }
+            )
             self.sudo().message_post(
                 body=_("Your account number %(iban_number)s is successfully attached.")
                 % {"iban_number": self.journal_id.bank_account_id.display_name}
