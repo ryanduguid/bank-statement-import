@@ -2,6 +2,7 @@
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 import datetime
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 from odoo.exceptions import UserError
 from odoo.tests import common
@@ -215,12 +216,14 @@ class TestAccountStatementImportOnlinePlaid(common.TransactionCase):
             {"name": "Fixture bank", "country": country.id}
         )
         self.bank_account.bank_id = bank
+        fixture_link = uuid4().hex
         link_token_create.return_value = MagicMock(
-            to_dict=lambda: {"link_token": "fixture-link"}
+            to_dict=lambda: {"link_token": fixture_link}
         )
 
-        self.provider.with_company(other).action_sync_with_plaid()
+        action = self.provider.with_company(other).action_sync_with_plaid()
 
+        self.assertEqual(action["params"]["token"], fixture_link)
         request = link_token_create.call_args.args[0]
         self.assertEqual(request.client_name, self.journal.company_id.name)
         self.assertEqual(request.country_codes[0].value, "GB")
@@ -296,13 +299,15 @@ class TestAccountStatementImportOnlinePlaid(common.TransactionCase):
             self.provider.plaid_account_id,
             self.provider.plaid_access_token,
         )
-        exchange.return_value = {"access_token": None}
-        self.assertFalse(
-            self.provider.plaid_create_access_token(
-                "synthetic-public", self.provider.id, [{"id": "different"}]
-            )
-        )
-        self.assertEqual(
-            (self.provider.plaid_account_id, self.provider.plaid_access_token),
-            linked_account,
-        )
+        for response in (None, {}, dict.fromkeys(["access_token"])):
+            with self.subTest(response=response):
+                exchange.return_value = response
+                self.assertFalse(
+                    self.provider.plaid_create_access_token(
+                        "synthetic-public", self.provider.id, [{"id": "different"}]
+                    )
+                )
+                self.assertEqual(
+                    (self.provider.plaid_account_id, self.provider.plaid_access_token),
+                    linked_account,
+                )

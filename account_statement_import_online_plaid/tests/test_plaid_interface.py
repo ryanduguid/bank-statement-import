@@ -2,6 +2,7 @@
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 import datetime
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 import plaid
 from dateutil.relativedelta import relativedelta
@@ -82,13 +83,14 @@ class TestPlaidInterface(common.TransactionCase):
     @patch("plaid.api.plaid_api.PlaidApi.item_public_token_exchange")
     def test_login(self, item_public_token_exchange):
         interface_model = self.env["plaid.interface"]
+        expected_token = uuid4().hex
         item_public_token_exchange.return_value = MagicMock(
-            to_dict=lambda: {"access_token": "isaccesstoken"}
+            to_dict=lambda: {"access_token": expected_token}
         )
         client = interface_model._client("client_id", "secret", "sandbox")
         public_token = "isapulbictoken"
         access_token = interface_model._login(client, public_token)
-        self.assertTrue(access_token)
+        self.assertEqual(access_token, expected_token)
 
     @patch(
         "plaid.api.plaid_api.PlaidApi.item_public_token_exchange",
