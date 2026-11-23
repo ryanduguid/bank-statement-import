@@ -282,3 +282,15 @@ class TestAccountBankStatementImportMoveLine(AccountTestInvoicingCommon):
         wizard.move_date = receivable.date
         wizard.populate()
         self.assertIn(receivable, wizard.move_line_ids)
+
+    def test_unsaved_wizard_with_cleared_date_filter_keeps_unreconciled_lines(self):
+        self.invoice.action_post()
+        receivable = self.invoice.line_ids.filtered(
+            lambda line: line.account_id.account_type == "asset_receivable"
+        )
+        cutoff = min(receivable.date, receivable.date_maturity) - timedelta(days=1)
+        wizard = self.env["account.statement.line.create"].new(
+            {"date_type": False, "move_date": cutoff, "due_date": cutoff}
+        )
+        domain = wizard.move_line_filters_change()["domain"]["move_line_ids"]
+        self.assertIn(receivable, self.env["account.move.line"].search(domain))

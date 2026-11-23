@@ -1264,3 +1264,11 @@ class TestAccountBankAccountStatementImportOnlinePayPal(common.TransactionCase):
                     self.today, self.today + timedelta(days=1)
                 )
             self.assertEqual(lookup.call_count, len(balance_entries))
+
+    def test_optional_gross_amount_keeps_the_reported_paypal_fee(self):
+        provider = self._balance_provider()
+        transaction = self._first_balance_transaction()
+        del transaction["transaction_info"]["transaction_amount"]
+        gross, fee = provider._paypal_transaction_to_lines(transaction)
+        self.assertEqual(gross["amount"], "0")
+        self.assertEqual(fee["amount"], "-0.25")

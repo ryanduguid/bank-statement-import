@@ -200,13 +200,11 @@ class TestParser(TestParserCommon):
                 account = statement.find("{*}Acct/{*}Id")
                 account[0].text = "SYNTHETIC-OTHER-ACCOUNT"
             else:
-                currency = statement.find("{*}Acct/{*}Ccy")
-                if currency is None:
-                    currency = etree.SubElement(
-                        statement.find("{*}Acct"),
-                        f"{{{etree.QName(statement).namespace}}}Ccy",
-                    )
-                currency.text = "USD"
+                account = statement.find("{*}Acct")
+                self.assertIsNone(account.find("{*}Ccy"))
+                etree.SubElement(
+                    account, f"{{{etree.QName(statement).namespace}}}Ccy"
+                ).text = "USD"
                 for element in statement.iter():
                     if "Ccy" in element.attrib:
                         element.set("Ccy", "USD")
@@ -271,6 +269,14 @@ class TestParser(TestParserCommon):
         self.assertIn("1 Example Road", credit["narration"])
         self.assertNotIn("1 Example Road", zero["narration"])
         self.assertNotIn("account_number", zero)
+
+    def test_single_detail_inherits_an_explicit_zero_booked_amount(self):
+        document = etree.fromstring(DOMESTIC_INTERIM_CAMT)
+        document.find(".//{*}Ntry/{*}Amt").text = "0.00"
+        _, _, (statement,) = self.parser.parse(etree.tostring(document))
+        credit, debit = statement["transactions"]
+        self.assertEqual((credit["amount"], debit["amount"]), (0, -10))
+        self.assertIn("Fabricated invoice 25", credit["payment_ref"])
 
     def test_batched_details_with_missing_amount_book_the_aggregate_once(self):
         document = etree.fromstring(DOMESTIC_INTERIM_CAMT)

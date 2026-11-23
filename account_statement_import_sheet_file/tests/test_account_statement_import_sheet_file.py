@@ -1259,3 +1259,17 @@ class TestAccountStatementImportSheetFile(Common):
         self.assertEqual(statement.balance_start, 0.0)
         self.assertEqual(statement.balance_end_real, 2291.5)
         self.assertEqual(statement.balance_end, 2291.5)
+
+    def test_extension_currency_defaults_to_the_statement_when_unresolved(self):
+        base = {
+            "timestamp": datetime(2026, 9, 1),
+            "amount": Decimal("25.00"),
+            "original_amount": None,
+            "original_currency": None,
+        }
+        for currency in (None, "ZZZ"):
+            with self.subTest(currency=currency):
+                row = dict(base, currency=currency)
+                (transaction,) = self.parser._convert_line_to_transactions(row)
+                self.assertNotIn("currency_id", transaction)
+                self.assertEqual(transaction["amount"], "25.00")
