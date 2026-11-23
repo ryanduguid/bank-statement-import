@@ -90,14 +90,16 @@ class PythonReportTests(unittest.TestCase):
     def test_import_exposes_inventory_without_writing_a_report(self):
         native_data = self.data_file.read_bytes()
         reporter = runpy.run_path(str(Path(__file__).with_name("python_report.py")))
-        self.assertEqual(
-            set(reporter["addon_sources"](self.root)),
-            {
-                str(self.loaded),
-                str(self.unloaded),
-                str(self.loaded.with_name("__init__.py")),
-            },
-        )
+        anchor = self.root / "relative-root"
+        anchor.mkdir()
+        expected = {
+            str(self.loaded.resolve()),
+            str(self.unloaded.resolve()),
+            str(self.loaded.with_name("__init__.py").resolve()),
+        }
+        for root in (self.root, anchor / ".."):
+            with self.subTest(root=root):
+                self.assertEqual(set(reporter["addon_sources"](root)), expected)
         self.assertEqual(self.data_file.read_bytes(), native_data)
         self.assertFalse(self.output.exists())
 
