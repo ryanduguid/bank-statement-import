@@ -6,7 +6,7 @@
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl.html).
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from html import escape
 
@@ -516,14 +516,7 @@ class OnlineBankStatementProvider(models.Model):
 
     def _get_next_run_period(self):
         self.ensure_one()
-        if self.interval_type == "minutes":
-            return relativedelta(minutes=self.interval_number)
-        elif self.interval_type == "hours":
-            return relativedelta(hours=self.interval_number)
-        elif self.interval_type == "days":
-            return relativedelta(days=self.interval_number)
-        elif self.interval_type == "weeks":
-            return relativedelta(weeks=self.interval_number)
+        return timedelta(**{self.interval_type: self.interval_number})
 
     @api.model
     def _scheduled_pull(self):
@@ -561,6 +554,12 @@ class OnlineBankStatementProvider(models.Model):
         delta = self._get_next_run_period()
         now = datetime.now()
         target_run = self.next_run
+        if isinstance(delta, timedelta):
+            # Keep the existing strict boundary when the next run equals now.
+            elapsed = now - target_run - timedelta.resolution
+            self.next_run = target_run + max(0, elapsed // delta) * delta
+            return
+        # An extension can return a calendar interval whose length varies.
         next_run = self.next_run + delta
         while next_run < now:
             target_run = next_run
