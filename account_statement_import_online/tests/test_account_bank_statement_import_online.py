@@ -134,6 +134,30 @@ class TestAccountBankAccountStatementImportOnline(common.TransactionCase):
         )
         self._getExpectedLines(expected_count)
 
+    def test_pull_skips_same_batch_duplicates_and_preserves_provider_data(self):
+        since = datetime(2024, 5, 1)
+        until = datetime(2024, 5, 2)
+        line = {
+            "date": datetime(2024, 5, 1, 10),
+            "payment_ref": "Example payment",
+            "amount": 7.0,
+            "unique_import_id": "fabricated-duplicate",
+        }
+        values = {"balance_start": 10.0}
+        data = ([dict(line), dict(line)], dict(values))
+
+        statement = self.provider._create_or_update_statement(data, since, until)
+
+        self.assertEqual(len(statement.line_ids), 1)
+        self.assertEqual(statement.balance_end, 17.0)
+        self.assertEqual(data, ([line, line], values))
+
+        repeated = self.provider._create_or_update_statement(data, since, until)
+
+        self.assertFalse(repeated)
+        self.assertEqual(self._getExpectedStatements(1), statement)
+        self._getExpectedLines(1)
+
     def test_interval_type_minutes(self):
         self.provider.interval_type = "minutes"
         self.provider._compute_update_schedule()
