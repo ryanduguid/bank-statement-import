@@ -160,13 +160,14 @@ class TestAccountBankAccountStatementImportOnlineGocardless(common.TransactionCa
                         "fixture-array",
                         "25.00",
                         debtorName="Fixture Customer",
-                        debtorAccount={"iban": own_account},
+                        debtorAccount={"iban": f" {own_account.lower()} "},
                         remittanceInformationUnstructuredArray=["Invoice", "A-101"],
                     ),
                     booked(
                         "fixture-supplier",
                         "-10.00",
                         creditorName="Fixture Supplier",
+                        debtorAccount={"iban": own_account},
                         creditorAccount={"iban": supplier_account},
                     ),
                     booked(
@@ -218,6 +219,47 @@ class TestAccountBankAccountStatementImportOnlineGocardless(common.TransactionCa
             statements,
         )
         self.assertEqual(statements.line_ids, lines)
+
+    def test_missing_currency_is_looked_up_once_per_pull(self):
+        debtor_iban = "NL91ABNA0417164300"
+        creditor_iban = "NL52ABNA0102030405"
+        creditor = {"iban": creditor_iban}
+        booked = [
+            {
+                "transactionId": identifier,
+                "bookingDate": "2020-10-30",
+                "transactionAmount": {"currency": "XTS", "amount": amount},
+                "creditorAccount": creditor_account,
+                "debtorAccount": {"iban": debtor_iban},
+            }
+            for identifier, amount, creditor_account in (
+                ("fixture-credit", "10.00", creditor),
+                ("fixture-debit", "-10.00", creditor),
+                ("fixture-fallback", "-10.00", None),
+            )
+        ]
+        booked.insert(1, {"transactionId": "fixture-undated"})
+        currencies = self.env["res.currency"]
+        with (
+            mock.patch(
+                _provider_class + "._gocardless_request_transactions",
+                return_value={"transactions": {"booked": booked}},
+            ),
+            mock.patch.object(
+                type(currencies), "search", return_value=currencies
+            ) as find,
+        ):
+            lines, _ = self.provider._gocardless_obtain_statement_data(
+                fields.Datetime.to_datetime("2020-10-01"),
+                fields.Datetime.to_datetime("2020-10-31"),
+            )
+        find.assert_called_once_with([("name", "=", "XTS")])
+        self.assertEqual([line["amount"] for line in lines], [10, -10, -10])
+        self.assertEqual([line["sequence"] for line in lines], [1, 2, 3])
+        self.assertEqual(
+            [line["account_number"] for line in lines],
+            [debtor_iban, creditor_iban, debtor_iban],
+        )
 
     def test_provider_gocardless_finish_requisition(self):
         with self.mock_requisition(), self.mock_account(), self.mock_agreement():
@@ -559,3 +601,23 @@ class TestAccountBankAccountStatementImportOnlineGocardless(common.TransactionCa
             )
         request.assert_not_called()
         self.assertIn("renew the authorization", str(raised.exception))
+
+    def test_missing_consent_or_reset_requires_reconnection_before_import(self):
+        since = fields.Datetime.to_datetime("2020-10-01")
+        until = fields.Datetime.to_datetime("2020-11-01")
+        self.provider.gocardless_requisition_expiration = False
+        with mock.patch(
+            _provider_class + "._gocardless_request_transactions"
+        ) as request:
+            with self.assertRaisesRegex(UserError, "renew the authorization"):
+                self.provider._pull(since, until)
+
+            self.provider.gocardless_reset_requisition()
+            self.assertFalse(self.provider.gocardless_account_id)
+            self.assertFalse(self.provider.gocardless_requisition_expiration)
+            self.provider.gocardless_requisition_expiration = self.now + relativedelta(
+                days=1
+            )
+            with self.assertRaisesRegex(UserError, "renew the authorization"):
+                self.provider._pull(since, until)
+        request.assert_not_called()

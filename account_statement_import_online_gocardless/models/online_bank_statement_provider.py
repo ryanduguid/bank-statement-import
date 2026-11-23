@@ -13,6 +13,8 @@ from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 from odoo.tools import DEFAULT_SERVER_DATE_FORMAT as DF
 
+from odoo.addons.base.models.res_bank import sanitize_account_number
+
 GOCARDLESS_API = "https://bankaccountdata.gocardless.com/api/v2/"
 REQUESTS_TIMEOUT = 60
 
@@ -52,6 +54,7 @@ class OnlineBankStatementProvider(models.Model):
     def gocardless_reset_requisition(self):
         self.write(
             {
+                "gocardless_account_id": False,
                 "gocardless_requisition_id": False,
                 "gocardless_requisition_ref": False,
                 "gocardless_requisition_expiration": False,
@@ -273,13 +276,7 @@ class OnlineBankStatementProvider(models.Model):
             )
             return True
         elif not dry:
-            self.sudo().write(
-                {
-                    "gocardless_requisition_expiration": False,
-                    "gocardless_requisition_id": False,
-                    "gocardless_requisition_ref": False,
-                }
-            )
+            self.sudo().gocardless_reset_requisition()
             self.sudo().message_post(
                 body=_(
                     "Your account number %(iban_number)s it's not in the IBAN "
@@ -322,39 +319,41 @@ class OnlineBankStatementProvider(models.Model):
         the given period.
         """
         self.ensure_one()
-        if not self.gocardless_account_id:
-            return
-        currency_model = self.env["res.currency"]
-        if self.gocardless_requisition_expiration <= fields.Datetime.now():
+        expiration = self.gocardless_requisition_expiration
+        if (
+            not self.gocardless_account_id
+            or not expiration
+            or expiration <= fields.Datetime.now()
+        ):
             message = _(
                 "You should renew the authorization process with your bank "
                 "institution for GoCardless."
             )
             self.sudo().message_post(body=message)
             raise UserError(message)
+        currency_model = self.env["res.currency"]
         own_acc_number = self.journal_id.bank_account_id.sanitized_acc_number
         transactions = self._gocardless_request_transactions(date_since, date_until)
         res = []
-        sequence = 0
         currencies_cache = {}
+        main_value = self.gocardless_date_type
+        alt_value = "bookingDate" if main_value == "valueDate" else "valueDate"
         for tr in transactions.get("transactions", {}).get("booked", []):
             # Reference: https://developer.gocardless.com/bank-account-data/transactions
-            main_value = self.gocardless_date_type
-            alt_value = "bookingDate" if main_value == "valueDate" else "valueDate"
             string_date = tr.get(main_value) or tr.get(alt_value)
             # CHECK ME: if there's not date string, is transaction still valid?
             if not string_date:
                 continue
             current_date = fields.Date.from_string(string_date)
-            sequence += 1
             amount = float(tr.get("transactionAmount", {}).get("amount", 0.0))
             currency_code = tr.get("transactionAmount", {}).get(
                 "currency", self.journal_id.currency_id.name
             )
-            currency = currencies_cache.get(currency_code)
-            if not currency:
-                currency = currency_model.search([("name", "=", currency_code)])
-                currencies_cache[currency_code] = currency
+            if currency_code not in currencies_cache:
+                currencies_cache[currency_code] = currency_model.search(
+                    [("name", "=", currency_code)]
+                )
+            currency = currencies_cache[currency_code]
             amount_currency = amount
             if (
                 currency
@@ -367,15 +366,15 @@ class OnlineBankStatementProvider(models.Model):
                     self.journal_id.company_id,
                     current_date,
                 )
-            if amount_currency >= 0:
-                partner_name = tr.get("debtorName", False)
+            parties = ("debtor", "creditor") if amount >= 0 else ("creditor", "debtor")
+            partner_name = tr.get(f"{parties[0]}Name", False)
+            for account_party in parties:
+                account_number = (tr.get(f"{account_party}Account") or {}).get("iban")
+                account_reference = sanitize_account_number(account_number or "")
+                if account_reference and account_reference != own_acc_number:
+                    break
             else:
-                partner_name = tr.get("creditorName", False)
-            account_number = tr.get("debtorAccount", {}).get("iban") or tr.get(
-                "creditorAccount", {}
-            ).get("iban", False)
-            if account_number == own_acc_number:
-                account_number = False  # Discard own bank account number
+                account_number = False
             if "remittanceInformationUnstructured" in tr:
                 payment_ref = tr["remittanceInformationUnstructured"]
             elif "remittanceInformationUnstructuredArray" in tr:
@@ -384,7 +383,7 @@ class OnlineBankStatementProvider(models.Model):
                 payment_ref = partner_name
             res.append(
                 {
-                    "sequence": sequence,
+                    "sequence": len(res) + 1,
                     "date": current_date,
                     "ref": partner_name or "/",
                     "payment_ref": payment_ref,

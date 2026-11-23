@@ -3,7 +3,7 @@
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest import mock
 from urllib.error import HTTPError
@@ -288,6 +288,40 @@ class TestAccountBankAccountStatementImportOnlineWise(common.TransactionCase):
         self.assertEqual(data[1]["balance_start"], 42.0)
         self.assertEqual(data[1]["balance_end_real"], 42.0)
 
+    def test_pull_uses_utc_boundaries_and_rejects_an_empty_interval(self):
+        journal = self.AccountJournal.create(
+            {
+                "name": "Wise time zone test",
+                "code": "WSTZ",
+                "type": "bank",
+                "currency_id": self.currency_eur.id,
+            }
+        )
+        provider = self.OnlineBankStatementProvider.new(
+            {"service": "transferwise", "journal_id": journal.id, "origin": "fixture"}
+        )
+        date_since = datetime(2024, 4, 5, 12, tzinfo=timezone(timedelta(hours=10)))
+        date_until = date_since + timedelta(days=1)
+        accounts = [{"id": 42, "balances": [{"currency": "EUR"}]}]
+        statement = {"transactions": [], "endOfStatementBalance": {"value": 0}}
+        with mock.patch(
+            _provider_class + "._wise_retrieve",
+            side_effect=[accounts, statement, statement, accounts, statement],
+        ) as request:
+            lines, balances = provider._obtain_statement_data(date_since, date_until)
+            with self.assertRaisesRegex(UserError, "Ending balance unavailable"):
+                provider._obtain_statement_data(date_since, date_since)
+        self.assertEqual(lines, [])
+        self.assertEqual(balances, {"balance_start": 0, "balance_end_real": 0})
+        self.assertEqual(request.call_count, 5)
+        start_url, statement_url = (
+            call.args[0] for call in request.call_args_list[1:3]
+        )
+        self.assertIn("intervalStart=2024-04-05T02:00:00Z", start_url)
+        self.assertIn("intervalEnd=2024-04-05T02:00:00Z", start_url)
+        self.assertIn("intervalStart=2024-04-05T02:00:00Z", statement_url)
+        self.assertIn("intervalEnd=2024-04-06T02:00:00Z", statement_url)
+
     def test_pull_no_data(self):
         journal = self.AccountJournal.create(
             {
@@ -316,6 +350,36 @@ class TestAccountBankAccountStatementImportOnlineWise(common.TransactionCase):
                 )
                 self.assertIsNone(data)
                 retrieve.assert_called_once()
+
+    def test_certificate_without_a_key_keeps_only_non_wise_public_values(self):
+        provider = self.OnlineBankStatementProvider.new(
+            {"service": "dummy", "certificate_public_key": "fixture-public"}
+        )
+        provider._onchange_wise_certificate_private_key()
+        self.assertEqual(provider.certificate_public_key, "fixture-public")
+        provider.service = "transferwise"
+        provider._onchange_wise_certificate_private_key()
+        self.assertFalse(provider.certificate_public_key)
+
+    def test_certificate_parser_reports_invalid_input_without_masking_interrupts(self):
+        provider = self.OnlineBankStatementProvider.new(
+            {"service": "transferwise", "certificate_private_key": "invalid-fixture"}
+        )
+        with (
+            self.assertLogs(level="WARNING") as lines,
+            self.assertRaisesRegex(UserError, "Unable to parse key"),
+        ):
+            provider._onchange_wise_certificate_private_key()
+        self.assertIn("Unable to parse Wise certificate key", lines.output[0])
+        self.assertFalse(provider.certificate_public_key)
+        with (
+            mock.patch(
+                "cryptography.hazmat.primitives.serialization.load_pem_private_key",
+                side_effect=KeyboardInterrupt,
+            ),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            provider._onchange_wise_certificate_private_key()
 
     def test_update_public_key(self):
         journal = self.AccountJournal.create(
@@ -446,6 +510,20 @@ edF6byMgXSzgOWYuRPXwmHpBQV0GiexQUAxVyUzaVWfil69LaFfXaw==
         for transaction_type, amount, currency, details, foreign in (
             ("DEBIT", -10, "EUR", None, self.currency_usd),
             ("CREDIT", 11, "USD", {"merchant": None}, self.currency_eur),
+            (
+                "DEBIT",
+                -10,
+                "EUR",
+                {"recipient": {"bankAccount": "fixture"}},
+                self.currency_usd,
+            ),
+            (
+                "CREDIT",
+                11,
+                "USD",
+                {"merchant": {"category": "fixture"}},
+                self.currency_eur,
+            ),
         ):
             with self.subTest(transaction_type=transaction_type):
                 [line] = self.wise_parse_transaction(

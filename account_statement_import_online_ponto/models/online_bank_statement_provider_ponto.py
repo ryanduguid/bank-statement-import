@@ -120,8 +120,19 @@ class OnlineBankStatementProvider(models.Model):
             )
         interface_model._set_access_account(access_data, self.account_number)
         latest_identifier = False
+        seen_identifiers = set()
         transactions = interface_model._get_transactions(access_data, latest_identifier)
         while transactions:
+            latest_identifier = transactions[-1].get("id")
+            if (
+                not isinstance(latest_identifier, str)
+                or not latest_identifier
+                or latest_identifier in seen_identifiers
+            ):
+                raise UserError(
+                    _("Ponto returned a transaction page without a new identifier.")
+                )
+            seen_identifiers.add(latest_identifier)
             for line in transactions:
                 identifier = line.get("id")
                 transaction_datetime = self._ponto_get_transaction_datetime(line)
@@ -141,9 +152,7 @@ class OnlineBankStatementProvider(models.Model):
                         or transaction_datetime > date_until
                     ):
                         continue
-                line["transaction_datetime"] = transaction_datetime
-                lines.append(line)
-            latest_identifier = transactions[-1].get("id")
+                lines.append(dict(line, transaction_datetime=transaction_datetime))
             transactions = interface_model._get_transactions(
                 access_data, latest_identifier
             )

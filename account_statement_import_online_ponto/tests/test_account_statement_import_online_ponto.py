@@ -326,6 +326,37 @@ class TestAccountStatementImportOnlinePonto(common.TransactionCase):
                 expected_balance_end=15.56,  # Includes 4.25 from statement before.
             )
 
+    def test_ponto_missing_or_repeated_page_cursor_aborts_the_pull(self):
+        first, second, third = FOUR_TRANSACTIONS[:3]
+        self.provider.ponto_last_identifier = "previously-imported"
+        provider = self.provider.with_context(scheduled=True)
+        date_since = fields.Datetime.to_datetime("2019-09-25")
+        date_until = fields.Datetime.to_datetime("2019-11-18")
+        for pages, cursors in (
+            ([[dict(first, id=None)]], [False]),
+            ([[first], [second], [first]], [False, first["id"], second["id"]]),
+            (
+                [[first, dict(second, id="previously-imported"), dict(third, id="")]],
+                [False],
+            ),
+        ):
+            with (
+                self.subTest(cursors=cursors),
+                self.mock_login(),
+                self.mock_set_access_account(),
+                mock.patch(
+                    _interface_class + "._get_transactions", side_effect=pages
+                ) as retrieve,
+                self.assertRaisesRegex(UserError, "without a new identifier"),
+            ):
+                provider._pull(date_since, date_until)
+            self.assertEqual(
+                retrieve.call_args_list,
+                [mock.call(mock.ANY, cursor) for cursor in cursors],
+            )
+            self.assertEqual(provider.ponto_last_identifier, "previously-imported")
+            self._get_statements_from_journal(expected_count=0)
+
     def test_ponto_scheduled(self):
         with (
             self.mock_login(),
