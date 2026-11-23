@@ -333,21 +333,45 @@ class AccountStatementImport(models.TransientModel):
 
         # Filter out already imported transactions and create statements
         statement_ids = []
-        existing_st_line_ids = {}
+        existing_st_line_ids = set()
         for st_vals in stmts_vals:
-            st_lines_to_create = []
-            for lvals in st_vals["transactions"]:
-                existing_line = False
-                if lvals.get("unique_import_id"):
-                    existing_line = absl_obj.sudo().search(
-                        [
-                            ("unique_import_id", "=", lvals["unique_import_id"]),
-                        ],
-                        limit=1,
+            transactions = st_vals["transactions"]
+            import_ids = {
+                line["unique_import_id"]
+                for line in transactions
+                if line.get("unique_import_id")
+            }
+            existing_lines = {}
+            if import_ids:
+                existing_lines = {
+                    line.unique_import_id: line.id
+                    for line in absl_obj.sudo().search_fetch(
+                        [("unique_import_id", "in", list(import_ids))],
+                        ["unique_import_id"],
                     )
-                    # we can only have 1 anyhow because we have a unicity SQL constraint
-                if existing_line:
-                    existing_st_line_ids[existing_line.id] = True
+                }
+            seen_lines = {}
+            st_lines_to_create = []
+            for lvals in transactions:
+                import_id = lvals.get("unique_import_id")
+                if import_id:
+                    previous = seen_lines.get(import_id)
+                    if previous is not None:
+                        # The format may assign positions to otherwise identical rows.
+                        if {k: v for k, v in previous.items() if k != "sequence"} != {
+                            k: v for k, v in lvals.items() if k != "sequence"
+                        }:
+                            raise UserError(
+                                self.env._(
+                                    "The bank statement contains different "
+                                    "transactions with the same import reference."
+                                )
+                            )
+                        continue
+                    seen_lines[import_id] = lvals
+                existing_line_id = existing_lines.get(import_id)
+                if existing_line_id:
+                    existing_st_line_ids.add(existing_line_id)
                     if "balance_start" in st_vals:
                         st_vals["balance_start"] += float(lvals["amount"])
                 else:

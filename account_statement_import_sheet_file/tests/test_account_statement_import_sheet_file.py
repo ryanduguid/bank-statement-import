@@ -43,7 +43,10 @@ class TestAccountStatementImportSheetFile(Common):
             ["Footer"],
         ]:
             workbook.active.append(row)
-        with BytesIO() as stream:
+        with (
+            BytesIO() as stream,
+            patch.dict("sys.modules", {"xlrd": None, "chardet": None}),
+        ):
             workbook.save(stream)
             lines = self.parser._parse_lines(
                 self.sample_statement_map, stream.getvalue(), "USD"
@@ -265,13 +268,41 @@ class TestAccountStatementImportSheetFile(Common):
     def test_undetected_csv_encoding_reports_decode_error(self):
         with (
             patch(
-                "odoo.addons.account_statement_import_sheet_file.models"
-                ".account_statement_import_sheet_parser.chardet.detect",
+                "chardet.detect",
                 return_value={"encoding": None},
             ),
             self.assertRaises(UnicodeDecodeError),
         ):
             self.parser._parse_lines(self.sample_statement_map, b"\xff", "USD")
+
+    def test_csv_works_without_optional_excel_and_encoding_readers(self):
+        mapping = self._headerless_csv_mapping()
+        data = "09/01/2026,25.00,Café\n".encode()
+        with patch.dict("sys.modules", {"xlrd": None, "chardet": None}):
+            lines = self.parser._parse_lines(mapping, data, "USD")
+            with self.assertRaises(UnicodeDecodeError):
+                self.parser._parse_lines(mapping, b"\xff", "USD")
+        self.assertEqual([line["description"] for line in lines], ["Café"])
+        self.assertEqual([line["amount"] for line in lines], [25])
+
+    def test_unreadable_encoding_detector_preserves_the_decode_error(self):
+        with (
+            patch(
+                "odoo.addons.account_statement_import_sheet_file.models"
+                ".account_statement_import_sheet_parser.import_module",
+                side_effect=PermissionError(),
+            ),
+            self.assertRaises(UnicodeDecodeError),
+        ):
+            self.parser._decode_data_file(b"\xff")
+
+    def test_unset_csv_dialect_uses_the_default_delimiter_and_quote(self):
+        mapping = self.AccountStatementImportSheetMapping.new(
+            {"delimiter": False, "quotechar": False, "header_lines_skip_count": 0}
+        )
+        data = self.parser._parse_csv_text(mapping, 'Label,Amount\n"July, rent",25')
+        self.assertEqual(self.parser.parse_header(data, mapping), ["Label", "Amount"])
+        self.assertEqual(list(data), [["July, rent", "25"]])
 
     def test_csv_preserves_transaction_audit_details(self):
         self.sample_statement_map.write(

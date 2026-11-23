@@ -1,6 +1,7 @@
 import base64
 import datetime
 
+from odoo.exceptions import UserError
 from odoo.tests.common import TransactionCase
 from odoo.tools.misc import file_path
 
@@ -47,7 +48,7 @@ class TestOfxFile(TransactionCase):
             }
         )
 
-        self.env["account.journal"].create(
+        self.journal_iban = self.env["account.journal"].create(
             {
                 "name": "FR7630001007942234567890185",
                 "code": "BNK13",
@@ -99,13 +100,30 @@ class TestOfxFile(TransactionCase):
             "account_statement_import_ofx_by_acctid/tests/test_ofx_file/test_ofx_iban.ofx"
         )
         ofx_file = base64.b64encode(open(ofx_file_path, "rb").read())
-        bank_st = self.asi_model.create(
+        wizard = self.asi_model.with_context(journal_id=self.journal_iban.id).create(
             {
                 "statement_file": ofx_file,
                 "statement_filename": "test_ofx_iban.ofx",
             }
         )
-        bank_st.import_file_button()
+        wizard.import_file_button()
+        self.assertTrue(
+            self.abs_model.search([("journal_id", "=", self.journal_iban.id)])
+        )
+
+    def test_acctid_match_rejects_another_selected_journal(self):
+        ofx_file_path = file_path(
+            "account_statement_import_ofx_by_acctid/tests/test_ofx_file/test_ofx.ofx"
+        )
+        with open(ofx_file_path, "rb") as data:
+            statement_file = base64.b64encode(data.read())
+        wizard = self.asi_model.with_context(journal_id=self.journal_iban.id).create(
+            {"statement_file": statement_file, "statement_filename": "test_ofx.ofx"}
+        )
+        with self.assertRaisesRegex(
+            UserError, "not consistent with the selected journal"
+        ):
+            wizard.import_file_button()
 
     def test_exact_acctid_precedes_substring(self):
         exact = self.env["res.partner.bank"].search([("acctid", "=", "223456-X")])
