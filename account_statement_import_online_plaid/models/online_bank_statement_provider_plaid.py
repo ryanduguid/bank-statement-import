@@ -72,13 +72,11 @@ class OnlineBankStatementProvider(models.Model):
         lang = (
             self.env["res.lang"]._lang_get(self.env.lang or self.env.user.lang).iso_code
         )
-        company_name = self.env.company.name
-
         link_token = plaid_interface._link(
             client=client,
             language=self._verify_lang(lang),
             country_code=self._country_code(),
-            company_name=company_name,
+            company_name=self.company_id.name,
             products=["transactions"],
         )
         return {
@@ -117,7 +115,14 @@ class OnlineBankStatementProvider(models.Model):
     def plaid_create_access_token(self, public_token, active_id, accounts=None):
         provider = self.browse(active_id)
         provider.ensure_one()
-        if not accounts or len(accounts) != 1 or not accounts[0].get("id"):
+        account_id = (
+            accounts[0].get("id")
+            if isinstance(accounts, list | tuple)
+            and len(accounts) == 1
+            and isinstance(accounts[0], dict)
+            else None
+        )
+        if not isinstance(account_id, str) or not account_id.strip():
             raise UserError(_("Select exactly one Plaid account for this journal."))
         plaid_interface = self.env["plaid.interface"]
         client = plaid_interface._client(
@@ -130,7 +135,7 @@ class OnlineBankStatementProvider(models.Model):
         provider.write(
             {
                 "plaid_access_token": access_token,
-                "plaid_account_id": accounts[0]["id"],
+                "plaid_account_id": account_id,
             }
         )
         return True

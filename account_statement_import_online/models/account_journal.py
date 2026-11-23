@@ -46,7 +46,9 @@ class AccountJournal(models.Model):
                 # Provider already exists.
                 continue
             # Use existing or create new provider for service.
-            provider = OnlineBankStatementProvider.search(
+            provider = OnlineBankStatementProvider.with_context(
+                active_test=False
+            ).search(
                 [
                     ("journal_id", "=", journal.id),
                     ("service", "=", service),

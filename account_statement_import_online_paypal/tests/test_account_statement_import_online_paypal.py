@@ -3,9 +3,11 @@
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 
 import json
+import sys
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from io import BytesIO
 from unittest import mock
 from urllib.error import HTTPError
 
@@ -861,25 +863,51 @@ class TestAccountBankAccountStatementImportOnlinePayPal(common.TransactionCase):
         )
 
     def test_retrieve_invalid_json_response(self):
-        """Cover new logic: if PayPal returns non-JSON body, raise UserError."""
-        journal = self.AccountJournal.create(
-            {
-                "name": "Bank",
-                "type": "bank",
-                "code": "BANK",
-                "currency_id": self.currency_eur.id,
-                "bank_statements_source": "online",
-                "online_bank_statement_provider": "paypal",
-            }
-        )
-        provider = journal.online_bank_statement_provider_id
-        mocked_response = UrlopenRetValMock("<html>not a json</html>", throw=False)
-        with mock.patch(
-            _provider_class + "._paypal_urlopen",
-            return_value=mocked_response,
+        provider = self.OnlineBankStatementProvider
+        depth = sys.getrecursionlimit()
+        nested = "[" * depth + "0" + "]" * depth
+        for body in ("<html>not a json</html>", "[{}]", "null", nested):
+            with (
+                self.subTest(length=len(body)),
+                mock.patch(
+                    _provider_class + "._paypal_urlopen",
+                    return_value=UrlopenRetValMock(body),
+                ),
+                self.assertRaisesRegex(
+                    UserError, "Invalid JSON response from PayPal API"
+                ),
+            ):
+                provider._paypal_retrieve("https://url", "--TOKEN--")
+
+    def test_non_json_http_error_keeps_transport_status(self):
+        provider = self.OnlineBankStatementProvider
+        url = "https://example.com/paypal-fixture"
+        depth = sys.getrecursionlimit()
+        nested = b"[" * depth + b"0" + b"]" * depth
+        for body in (b"<html>Service unavailable</html>", b"[]", b"\xff", nested):
+            error = HTTPError(url, 503, "Service unavailable", None, BytesIO(body))
+            with (
+                self.subTest(length=len(body)),
+                mock.patch(_provider_class + "._paypal_urlopen", side_effect=error),
+                self.assertRaises(HTTPError) as raised,
+            ):
+                provider._paypal_retrieve(url, "--TOKEN--")
+            self.assertIs(raised.exception, error)
+            self.assertEqual(raised.exception.code, 503)
+
+    def test_successful_transport_with_paypal_error_raises_user_error(self):
+        provider = self.OnlineBankStatementProvider.with_context(lang="en_US")
+        for body, expected in (
+            ('{"name": "SERVICE_UNAVAILABLE"}', "SERVICE_UNAVAILABLE: Unknown error"),
+            ('{"error": "server_error"}', "server_error: Unknown error"),
         ):
-            with self.assertRaisesRegex(
-                UserError, "Invalid JSON response from PayPal API"
+            with (
+                self.subTest(body=body),
+                mock.patch(
+                    _provider_class + "._paypal_urlopen",
+                    return_value=UrlopenRetValMock(body),
+                ),
+                self.assertRaisesRegex(UserError, expected),
             ):
                 provider._paypal_retrieve("https://url", "--TOKEN--")
 

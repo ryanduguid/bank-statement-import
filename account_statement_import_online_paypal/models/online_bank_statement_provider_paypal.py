@@ -519,9 +519,14 @@ class OnlineBankStatementProviderPayPal(models.Model):
     def _paypal_retrieve(self, url, auth, data=None):
         try:
             with self._paypal_urlopen(url, auth, data) as response:
-                raw = response.read().decode("utf-8")
+                raw = response.read()
         except HTTPError as e:
-            content = json.loads(e.read().decode("utf-8"))
+            try:
+                content = json.loads(e.read())
+            except (ValueError, RecursionError):
+                raise e from None
+            if not isinstance(content, dict):
+                raise
 
             # NOTE: Workaround for INVALID_REQUEST (see ROADMAP.rst)
             if (
@@ -541,10 +546,10 @@ class OnlineBankStatementProviderPayPal(models.Model):
         # Parse JSON
         try:
             content = json.loads(raw)
-        except Exception as exc:
-            raise UserError(
-                self.env._("Invalid JSON response from PayPal API.")
-            ) from exc
+        except (ValueError, RecursionError):
+            content = None
+        if not isinstance(content, dict):
+            raise UserError(self.env._("Invalid JSON response from PayPal API."))
 
         err = self._paypal_decode_error(content)
         if err:

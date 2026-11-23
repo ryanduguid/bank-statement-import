@@ -2,6 +2,7 @@
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 import datetime
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 from odoo.exceptions import UserError
 from odoo.tests import common
@@ -197,7 +198,7 @@ class TestAccountStatementImportOnlinePlaid(common.TransactionCase):
         self.assertIn(("plaid", "Plaid.com"), services)
 
     @patch("plaid.api.plaid_api.PlaidApi.link_token_create")
-    def test_action_sycn_with_plaid(self, link_token_create):
+    def test_action_sync_with_plaid(self, link_token_create):
         link_token_create.return_value = MagicMock(
             to_dict=lambda: {"link_token": "isalinktoken", "expiration": "isadate"}
         )
@@ -206,6 +207,34 @@ class TestAccountStatementImportOnlinePlaid(common.TransactionCase):
         self.assertEqual(action["type"], "ir.actions.client")
         self.assertEqual(action["tag"], "plaid_login")
         self.assertEqual(action["params"]["token"], "isalinktoken")
+
+    @patch("plaid.api.plaid_api.PlaidApi.link_token_create")
+    def test_sync_uses_journal_company_and_bank_country(self, link_token_create):
+        other = self.env["res.company"].create({"name": "Other company"})
+        country = self.env["res.country"].search([("code", "=", "GB")], limit=1)
+        bank = self.env["res.bank"].create(
+            {"name": "Fixture bank", "country": country.id}
+        )
+        self.bank_account.bank_id = bank
+        fixture_link = uuid4().hex
+        link_token_create.return_value = MagicMock(
+            to_dict=lambda: {"link_token": fixture_link}
+        )
+
+        action = self.provider.with_company(other).action_sync_with_plaid()
+
+        self.assertEqual(action["params"]["token"], fixture_link)
+        request = link_token_create.call_args.args[0]
+        self.assertEqual(request.client_name, self.journal.company_id.name)
+        self.assertEqual(request.country_codes[0].value, "GB")
+
+    def test_missing_bank_country_uses_company_or_reports_missing_configuration(self):
+        self.journal.company_id.country_id = self.env.ref("base.us")
+        self.assertEqual(self.provider._country_code(), "US")
+        self.journal.company_id.country_id = False
+        with self.assertRaisesRegex(UserError, "Country code not found"):
+            self.provider._country_code()
+        self.assertEqual(self.provider._verify_lang("ja"), "en")
 
     def test_reject_other_account_and_currency(self):
         for changes in (
@@ -236,11 +265,22 @@ class TestAccountStatementImportOnlinePlaid(common.TransactionCase):
         self.provider.plaid_account_id = False
         with self.assertRaises(UserError):
             self.provider._plaid_retrieve_data(self.now, self.now)
+        with self.assertRaisesRegex(UserError, "Relink Plaid"):
+            self.provider._prepare_vals_for_statement([])
 
     @patch("plaid.api.plaid_api.PlaidApi.item_public_token_exchange")
     def test_link_requires_one_account(self, exchange):
         exchange.return_value = {"access_token": "synthetic-token"}
-        for accounts in (None, [], [{"id": "a"}, {"id": "b"}], [{}]):
+        for accounts in (
+            None,
+            [],
+            [{"id": "a"}, {"id": "b"}],
+            [{}],
+            [None],
+            {"id": "selected"},
+            [{"id": 7}],
+            [{"id": " "}],
+        ):
             with self.subTest(accounts=accounts), self.assertRaises(UserError):
                 self.provider.plaid_create_access_token(
                     "synthetic-public", self.provider.id, accounts
@@ -252,3 +292,22 @@ class TestAccountStatementImportOnlinePlaid(common.TransactionCase):
             )
         )
         self.assertEqual(self.provider.plaid_account_id, "selected")
+
+    @patch("plaid.api.plaid_api.PlaidApi.item_public_token_exchange")
+    def test_empty_exchange_keeps_the_existing_link(self, exchange):
+        linked_account = (
+            self.provider.plaid_account_id,
+            self.provider.plaid_access_token,
+        )
+        for response in (None, {}, dict.fromkeys(["access_token"])):
+            with self.subTest(response=response):
+                exchange.return_value = response
+                self.assertFalse(
+                    self.provider.plaid_create_access_token(
+                        "synthetic-public", self.provider.id, [{"id": "different"}]
+                    )
+                )
+                self.assertEqual(
+                    (self.provider.plaid_account_id, self.provider.plaid_access_token),
+                    linked_account,
+                )

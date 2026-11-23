@@ -180,7 +180,11 @@ class OnlineBankStatementProvider(models.Model):
             )
 
     @api.depends("active", "interval_type", "interval_number")
+    @api.depends_context("lang")
     def _compute_update_schedule(self):
+        interval_labels = dict(
+            self._fields["interval_type"]._description_selection(self.env)
+        )
         for provider in self:
             if not provider.active:
                 provider.update_schedule = _("Inactive")
@@ -188,12 +192,7 @@ class OnlineBankStatementProvider(models.Model):
 
             provider.update_schedule = _("%(number)s %(type)s") % {
                 "number": provider.interval_number,
-                "type": list(
-                    filter(
-                        lambda x: x[0] == provider.interval_type,
-                        self._fields["interval_type"].selection,
-                    )
-                )[0][1],
+                "type": interval_labels[provider.interval_type],
             }
 
     def _pull(self, date_since, date_until):
@@ -220,7 +219,7 @@ class OnlineBankStatementProvider(models.Model):
                     data = provider._obtain_statement_data(
                         statement_date_since, statement_date_until
                     )
-                except BaseException as exception:
+                except Exception as exception:
                     if not is_scheduled:
                         raise
                     provider._log_provider_exception(

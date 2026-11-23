@@ -1,6 +1,8 @@
 # Copyright 2024 Binhex - Adasat Torres de León.
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 
+from collections.abc import Mapping
+
 import plaid
 from plaid.api import plaid_api
 from plaid.model.country_code import CountryCode
@@ -61,7 +63,9 @@ class PlaidInterface(models.AbstractModel):
             response = client.item_public_token_exchange(request)
         except plaid.ApiException as e:
             raise ValidationError(_("Error getting access token: %s") % e.body) from e
-        return response["access_token"]
+        if response is not None and not isinstance(response, Mapping):
+            response = response.to_dict()
+        return (response or {}).get("access_token")
 
     def _get_transactions(self, client, access_token, start_date, end_date, account_id):
         start = start_date.date()
