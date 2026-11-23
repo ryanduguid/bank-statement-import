@@ -1,0 +1,11 @@
+codecov:
+  notify:
+    after_n_builds: 3
+coverage:
+  round: down
+  status:
+    project:
+      default:
+        target: 100%
+        threshold: 0%
+        if_not_found: failure
