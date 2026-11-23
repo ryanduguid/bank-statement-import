@@ -9,23 +9,27 @@ class AccountMoveLine(models.Model):
 
     def _prepare_statement_line_vals(self, statement):
         self.ensure_one()
-        amount = 0.0
-        if self.debit > 0:
-            amount = self.debit
-        elif self.credit > 0:
-            amount = -self.credit
+        currency = statement.currency_id or self.company_currency_id
+        if currency == self.company_currency_id:
+            amount = self.balance
+        elif currency == self.currency_id:
+            amount = self.amount_currency
+        else:
+            amount = self.company_currency_id._convert(
+                self.balance, currency, self.company_id, self.date
+            )
         vals = {
             "name": self.name or "?",
             "amount": amount,
             "partner_id": self.partner_id.id,
             "statement_id": statement.id,
             "payment_ref": self.ref or self.name,
-            "date": self.date_maturity,
-            "currency_id": self.currency_id.id,
+            "date": self.date_maturity or self.date,
         }
-        if statement.currency_id != self.currency_id:
+        if currency != self.currency_id:
             vals.update(
                 {
+                    "foreign_currency_id": self.currency_id.id,
                     "amount_currency": self.amount_currency,
                 }
             )

@@ -50,14 +50,16 @@ class AccountStatementImportCamtParser(models.AbstractModel):
             xpath_str = [xpath_str]
         for search_str in xpath_str:
             found_node = node.xpath(search_str, namespaces={"ns": ns})
-            if found_node:
-                if isinstance(found_node[0], str):
-                    attr_value = found_node[0]
-                elif join_str is None:
-                    attr_value = found_node[0].text
-                else:
-                    attr_value = join_str.join([x.text for x in found_node])
-                obj[attr_name] = attr_value
+            values = [
+                item if isinstance(item, str) else item.text for item in found_node
+            ]
+            values = [value for value in values if value and value.strip()]
+            if values:
+                obj[attr_name] = (
+                    values[0]
+                    if join_str is None or isinstance(found_node[0], str)
+                    else join_str.join(values)
+                )
                 break
 
     def parse_transaction_details(self, ns, node, transaction):

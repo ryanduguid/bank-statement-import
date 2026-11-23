@@ -61,35 +61,33 @@ class CamtParser(models.AbstractModel):
         # put the esr in the label. odoo reconciles based on the label,
         # if there is no esr it tries to use the information textfield
 
-        qrr_number = node.xpath(
-            "./ns:RmtInf/ns:Strd/ns:CdtrRefInf/ns:Ref", namespaces={"ns": ns}
+        references = {}
+        self.add_value_from_node(
+            ns, node, "./ns:RmtInf/ns:Strd/ns:CdtrRefInf/ns:Ref", references, "qrr"
         )
-        if len(qrr_number):
-            transaction["payment_ref"] = qrr_number[0].text
-            partner_ref = self._get_partner_ref(qrr_number[0].text)
+        qrr_number = references.get("qrr")
+        if qrr_number:
+            transaction["payment_ref"] = qrr_number
+            partner_ref = self._get_partner_ref(qrr_number)
             if partner_ref:
                 transaction["partner_ref"] = partner_ref
         else:
-            xpath_exprs = [
+            label_paths = [
                 "./ns:RmtInf/ns:Ustrd|./ns:RtrInf/ns:AddtlInf",
                 "./ns:AddtlNtryInf",
-                "/ns:Refs/ns:InstrId",
             ]
-            payment_ref = transaction["payment_ref"]
-            for xpath_expr in xpath_exprs:
-                found_node = node.xpath(xpath_expr, namespaces={"ns": ns})
-                if found_node:
-                    payment_ref = found_node[0].text
-                    break
-            trans_id_node = (
-                node.getparent()
-                .getparent()
-                .xpath("./ns:AcctSvcrRef", namespaces={"ns": ns})
+            if node.xpath("ancestor::ns:Ntfctn", namespaces={"ns": ns}):
+                label_paths.append("./ns:Refs/ns:InstrId")
+            self.add_value_from_node(ns, node, label_paths, transaction, "payment_ref")
+            self.add_value_from_node(
+                ns, node, "../../ns:AcctSvcrRef", references, "servicer"
             )
-            if trans_id_node:
-                payment_ref = f"{payment_ref} ({trans_id_node[0].text})"
-            if payment_ref:
-                transaction["payment_ref"] = payment_ref
+            trans_id = references.get("servicer")
+            if trans_id:
+                payment_ref = transaction.get("payment_ref")
+                transaction["payment_ref"] = (
+                    f"{payment_ref} ({trans_id})" if payment_ref else trans_id
+                )
         # End add esr to the label.
 
         # add transaction id to ref

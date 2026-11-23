@@ -1,9 +1,9 @@
 # Copyright 2017 Tecnativa - Luis M. Ontalba
 # License AGPL-3 - See http://www.gnu.org/licenses/agpl-3.0
 
-from datetime import timedelta
+from datetime import date, timedelta
 
-from odoo import fields
+from odoo import Command, fields
 from odoo.tests import tagged
 
 from odoo.addons.account.tests.common import AccountTestInvoicingCommon
@@ -48,6 +48,85 @@ class TestAccountBankStatementImportMoveLine(AccountTestInvoicingCommon):
         wizard.create_statement_lines()
         line = self.statement.line_ids[0]
         self.assertEqual(line.amount, self.invoice.amount_total)
+
+    def test_import_retains_amounts_in_the_statement_and_invoice_currencies(self):
+        company = self.env.company
+        company_currency = company.currency_id
+        currencies = [
+            self.env.ref(f"base.{code}")
+            for code in ("USD", "EUR", "GBP")
+            if code != company_currency.name
+        ]
+        invoice_currency, other_currency = currencies[:2]
+        invoice_date = date(2026, 9, 1)
+        maturity = invoice_date + timedelta(days=7)
+        for currency, rate in ((invoice_currency, 2), (other_currency, 3)):
+            currency.active = True
+            self.env["res.currency.rate"].create(
+                {
+                    "name": invoice_date,
+                    "currency_id": currency.id,
+                    "company_id": company.root_id.id,
+                    "rate": rate,
+                }
+            )
+        self.env["res.currency.rate"].create(
+            {
+                "name": maturity,
+                "currency_id": other_currency.id,
+                "company_id": company.root_id.id,
+                "rate": 4,
+            }
+        )
+        invoice = self._create_invoice_one_line(
+            price_unit=100,
+            partner_id=self.partner,
+            currency_id=invoice_currency,
+            date=invoice_date,
+            tax_ids=[],
+        )
+        invoice.write({"invoice_payment_term_id": False, "invoice_date_due": maturity})
+        invoice.action_post()
+        receivable = invoice.line_ids.filtered(
+            lambda line: line.account_id.account_type == "asset_receivable"
+        )
+        self.assertEqual((receivable.balance, receivable.amount_currency), (50, 100))
+        self.assertEqual(receivable.date_maturity, maturity)
+        for currency, amount in (
+            (company_currency, 50),
+            (invoice_currency, 100),
+            (other_currency, 150),
+        ):
+            with self.subTest(currency=currency.name):
+                journal = self.env["account.journal"].create(
+                    {
+                        "name": f"Fixture bank {currency.name}",
+                        "code": f"T{currency.name}",
+                        "type": "bank",
+                        "currency_id": currency.id,
+                    }
+                )
+                wizard = (
+                    self.env["account.statement.line.create"]
+                    .with_context(active_model=journal._name, active_id=journal.id)
+                    .create({"move_line_ids": [Command.set(receivable.ids)]})
+                )
+                wizard.create_statement_lines()
+                foreign = currency != invoice_currency
+                self.assertRecordValues(
+                    wizard.statement_id.line_ids,
+                    [
+                        {
+                            "journal_id": journal.id,
+                            "currency_id": currency.id,
+                            "amount": amount,
+                            "foreign_currency_id": invoice_currency.id
+                            if foreign
+                            else False,
+                            "amount_currency": 100 if foreign else 0,
+                        }
+                    ],
+                )
 
     def _assert_payment_lines_are_excluded(self, reset_to_draft):
         self.invoice.action_post()

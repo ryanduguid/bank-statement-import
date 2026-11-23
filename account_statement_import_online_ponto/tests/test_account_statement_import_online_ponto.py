@@ -334,6 +334,7 @@ class TestAccountStatementImportOnlinePonto(common.TransactionCase):
         date_until = fields.Datetime.to_datetime("2019-11-18")
         for pages, cursors in (
             ([[dict(first, id=None)]], [False]),
+            ([[dict(first, id=" ")]], [False]),
             ([[first], [second], [first]], [False, first["id"], second["id"]]),
             (
                 [[first, dict(second, id="previously-imported"), dict(third, id="")]],
@@ -356,6 +357,25 @@ class TestAccountStatementImportOnlinePonto(common.TransactionCase):
             )
             self.assertEqual(provider.ponto_last_identifier, "previously-imported")
             self._get_statements_from_journal(expected_count=0)
+
+    def test_transaction_without_remittance_uses_the_description(self):
+        transaction = FOUR_TRANSACTIONS[0]
+        for remittance in (None, " "):
+            with self.subTest(remittance=remittance):
+                attributes = dict(
+                    transaction["attributes"],
+                    remittanceInformation=remittance,
+                    description="Scheduled   transfer",
+                    counterpartName=None,
+                    counterpartReference=None,
+                )
+                values = self.provider._ponto_get_transaction_vals(
+                    dict(transaction, attributes=attributes)
+                )
+                self.assertEqual(values["ref"], "Scheduled transfer")
+                self.assertEqual(values["payment_ref"], "Scheduled transfer")
+                self.assertNotIn("account_number", values)
+                self.assertNotIn("partner_name", values)
 
     def test_ponto_scheduled(self):
         with (

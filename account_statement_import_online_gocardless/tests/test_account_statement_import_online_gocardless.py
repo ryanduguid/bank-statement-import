@@ -261,6 +261,55 @@ class TestAccountBankAccountStatementImportOnlineGocardless(common.TransactionCa
             [debtor_iban, creditor_iban, debtor_iban],
         )
 
+    def test_foreign_transaction_uses_the_company_currency_when_journal_inherits_it(
+        self,
+    ):
+        company = self.journal.company_id
+        company_currency = company.currency_id
+        foreign = (
+            self.currency_eur
+            if self.currency_eur != company_currency
+            else self.env.ref("base.USD")
+        )
+        foreign.active = True
+        self.journal.currency_id = False
+        self.env["res.currency.rate"].create(
+            {
+                "currency_id": foreign.id,
+                "company_id": company.root_id.id,
+                "name": "2020-10-30",
+                "rate": 2,
+            }
+        )
+        transaction = {
+            "transactionId": "synthetic-foreign-transfer",
+            "bookingDate": "2020-10-30",
+            "transactionAmount": {"currency": foreign.name, "amount": "80.00"},
+            "remittanceInformationUnstructured": "Foreign transfer",
+        }
+        with mock.patch(
+            _provider_class + "._gocardless_request_transactions",
+            return_value={"transactions": {"booked": [transaction]}},
+        ):
+            self.provider._pull(
+                fields.Datetime.to_datetime("2020-10-01"),
+                fields.Datetime.to_datetime("2020-10-31"),
+            )
+        lines = self.env["account.bank.statement.line"].search(
+            [("journal_id", "=", self.journal.id)]
+        )
+        self.assertRecordValues(
+            lines,
+            [
+                {
+                    "amount": 40,
+                    "currency_id": company_currency.id,
+                    "foreign_currency_id": foreign.id,
+                    "amount_currency": 80,
+                }
+            ],
+        )
+
     def test_provider_gocardless_finish_requisition(self):
         with self.mock_requisition(), self.mock_account(), self.mock_agreement():
             res = self.provider._gocardless_finish_requisition(dry=True)

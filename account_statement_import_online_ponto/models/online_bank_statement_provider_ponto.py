@@ -126,7 +126,7 @@ class OnlineBankStatementProvider(models.Model):
             latest_identifier = transactions[-1].get("id")
             if (
                 not isinstance(latest_identifier, str)
-                or not latest_identifier
+                or not latest_identifier.strip()
                 or latest_identifier in seen_identifiers
             ):
                 raise UserError(
@@ -200,13 +200,14 @@ class OnlineBankStatementProvider(models.Model):
             ]
             if attributes.get(x)
         ]
-        ref = " ".join(ref_list)
+        ref = re.sub(" +", " ", " ".join(ref_list)).strip() or "/"
+        payment_ref = attributes.get("remittanceInformation") or ""
         date = self._ponto_get_transaction_datetime(transaction)
         vals_line = {
             "sequence": 1,  # Sequence is not meaningfull for Ponto.
             "date": date,
-            "ref": re.sub(" +", " ", ref) or "/",
-            "payment_ref": attributes.get("remittanceInformation", ref),
+            "ref": ref,
+            "payment_ref": payment_ref if payment_ref.strip() else ref,
             "unique_import_id": transaction["id"],
             "amount": attributes["amount"],
             "raw_data": json.dumps(transaction),

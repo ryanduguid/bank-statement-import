@@ -332,7 +332,9 @@ class OnlineBankStatementProvider(models.Model):
             self.sudo().message_post(body=message)
             raise UserError(message)
         currency_model = self.env["res.currency"]
-        own_acc_number = self.journal_id.bank_account_id.sanitized_acc_number
+        journal = self.journal_id
+        journal_currency = journal.currency_id or journal.company_id.currency_id
+        own_acc_number = journal.bank_account_id.sanitized_acc_number
         transactions = self._gocardless_request_transactions(date_since, date_until)
         res = []
         currencies_cache = {}
@@ -347,24 +349,21 @@ class OnlineBankStatementProvider(models.Model):
             current_date = fields.Date.from_string(string_date)
             amount = float(tr.get("transactionAmount", {}).get("amount", 0.0))
             currency_code = tr.get("transactionAmount", {}).get(
-                "currency", self.journal_id.currency_id.name
+                "currency", journal_currency.name
             )
             if currency_code not in currencies_cache:
                 currencies_cache[currency_code] = currency_model.search(
                     [("name", "=", currency_code)]
                 )
             currency = currencies_cache[currency_code]
-            amount_currency = amount
-            if (
-                currency
-                and self.journal_id.currency_id
-                and currency != self.journal_id.currency_id
-            ):
-                amount_currency = currency._convert(
-                    amount,
-                    self.journal_id.currency_id,
-                    self.journal_id.company_id,
-                    current_date,
+            line_amounts = {"amount": amount}
+            if currency and currency != journal_currency:
+                line_amounts.update(
+                    amount=currency._convert(
+                        amount, journal_currency, journal.company_id, current_date
+                    ),
+                    foreign_currency_id=currency.id,
+                    amount_currency=amount,
                 )
             parties = ("debtor", "creditor") if amount >= 0 else ("creditor", "debtor")
             partner_name = tr.get(f"{parties[0]}Name", False)
@@ -388,7 +387,7 @@ class OnlineBankStatementProvider(models.Model):
                     "ref": partner_name or "/",
                     "payment_ref": payment_ref,
                     "unique_import_id": self._gocardless_get_unique_import_id(tr),
-                    "amount": amount_currency,
+                    **line_amounts,
                     "account_number": account_number,
                     "partner_name": partner_name,
                     "transaction_type": tr.get("bankTransactionCode", ""),
