@@ -14,6 +14,33 @@ from .test_account_statement_import_online_ponto import FOUR_TRANSACTIONS
 class TestPontoInterface(common.TransactionCase):
     post_install = True
 
+    @patch("requests.get")
+    def test_request_sends_authorization_without_logging_it(self, requests_get):
+        interface = self.env["ponto.interface"]
+        marker = "synthetic-request-marker"
+        access = {
+            "access_token": marker,
+            "token_expiration": fields.Datetime.now() + relativedelta(minutes=5),
+        }
+        url = "https://example.invalid/transactions"
+        params = {"limit": 25}
+        requests_get.return_value = MagicMock(status_code=200, text='{"data": []}')
+        with self.assertLogs(
+            "odoo.addons.account_statement_import_online_ponto.models.ponto_interface",
+            level="DEBUG",
+        ) as logs:
+            self.assertEqual(interface._get_request(access, url, params), {"data": []})
+        requests_get.assert_called_once_with(
+            url,
+            params=params,
+            headers={"Accept": "application/json", "Authorization": f"Bearer {marker}"},
+            timeout=(60, 300),
+        )
+        output = "\n".join(logs.output)
+        self.assertIn(url, output)
+        self.assertIn(str(params), output)
+        self.assertNotIn(marker, output)
+
     @patch("requests.post")
     def test_login(self, requests_post):
         """Check Ponto API login."""
