@@ -79,20 +79,8 @@ jobs:
         shell: bash
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          node - <<'JS'
-          const assert = require('node:assert/strict');
-          const path = require('node:path');
-          const { execFileSync } = require('node:child_process');
-          const { instrument, inventory } = require('./.github/coverage/instrument.cjs');
-          const tooling = new Set(['eslint.config.cjs', 'prettier.config.cjs',
-            '.github/coverage/instrument.cjs', '.github/coverage/merge.cjs',
-            '.github/coverage/test-instrumentation.cjs']);
-          const tracked = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' }).split('\0').filter(Boolean);
-          const assets = tracked.filter(file => /\.(?:[cm]?js|es6)$/.test(file)
-            && !file.split('/').includes('tests') && !tooling.has(file));
-          assert.deepEqual(assets.sort(), [...inventory['bank-statement-import']].sort(), 'Browser asset inventory changed');
-          instrument('bank-statement-import', process.cwd(), path.join(process.env.RUNNER_TEMP, 'js-instrumentation'));
-          JS
+          node -e "require('./.github/coverage/instrument.cjs').checkInventory('bank-statement-import', '.')"
+          node .github/coverage/instrument.cjs bank-statement-import "$GITHUB_WORKSPACE" "$RUNNER_TEMP/js-instrumentation"
       - name: Install addons and dependencies
         run: oca_install_addons
       - name: Check licenses

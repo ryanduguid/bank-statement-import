@@ -10,7 +10,7 @@ const path = require('node:path');
 const os = require('node:os');
 const vm = require('node:vm');
 const { spawnSync } = require('node:child_process');
-const { instrument, inventory } = require('./instrument.cjs');
+const { checkInventory, instrument, inventory } = require('./instrument.cjs');
 const { merge } = require('./merge.cjs');
 
 function fixture(t, source = '// A comment is not an executable statement.\n\nfunction branch(value) {\n  if (value) return 17;\n  return 29;\n}\n', repository = 'account-invoicing') {
@@ -220,5 +220,26 @@ test('bank inventory measures the Plaid action and retains an unloaded module', 
   for (const filename of result.files()) {
     const expected = filename === plaid ? observed[records[plaid].coverageKey] : records[filename].seed;
     for (const field of ['s', 'f', 'b']) assert.deepEqual(result.fileCoverageFor(filename).data[field], expected[field]);
+  }
+});
+
+test('inventory check ignores tests and tooling and refuses an unlisted asset', t => {
+  const data = fixture(t, undefined, 'bank-statement-import');
+  const git = (...args) => spawnSync('git', args, { cwd: data.copy, encoding: 'utf8', timeout: 15000 });
+  const previous = process.cwd();
+  process.chdir(data.copy);
+  try {
+    fs.mkdirSync('addon/tests', { recursive: true });
+    fs.writeFileSync('addon/tests/tour.esm.js', '');
+    fs.writeFileSync('addon/README.md', '');
+    fs.writeFileSync('eslint.config.cjs', '');
+    assert.equal(git('init', '-q').status, 0);
+    assert.equal(git('add', '.').status, 0);
+    checkInventory('bank-statement-import', data.copy);
+    fs.writeFileSync('addon/unlisted.js', '');
+    assert.equal(git('add', '.').status, 0);
+    assert.throws(() => checkInventory('bank-statement-import', data.copy), /Browser asset inventory changed/);
+  } finally {
+    process.chdir(previous);
   }
 });

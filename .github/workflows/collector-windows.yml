@@ -28,14 +28,11 @@ jobs:
         env:
           COVERAGE_FILE: ${{ runner.temp }}/collector.coverage
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           python -m pip install --disable-pip-version-check coverage==7.16.2
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m coverage run --rcfile=.github/coverage/coverage.ini -m unittest discover -s .github/coverage -p 'test_*.py' -v
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m coverage combine --rcfile=.github/coverage/coverage.ini --keep
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m coverage xml --rcfile=.github/coverage/coverage.ini -o "$env:RUNNER_TEMP/collector-python.xml"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
         with:
           use_oidc: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
