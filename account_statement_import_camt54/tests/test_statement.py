@@ -152,6 +152,28 @@ class TestGenerateBankStatement(TransactionCase):
         self.assertEqual(transaction["partner_ref"], "3")
         self.assertEqual(transaction["ref"], "98888208N8")
 
+    def test_import_resolves_a_qr_partner_reference(self):
+        self.journal.transfer_line = False
+        self.env["ir.config_parameter"].set_param("qrr_partner_ref", "27,1")
+        partner = self.env["res.partner"].create(
+            {"name": "Fabricated QR customer", "ref": "3"}
+        )
+        lines = self._load_statement()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines.partner_id, partner)
+
+    def test_unknown_qr_reference_keeps_the_bank_account_partner(self):
+        self.journal.transfer_line = False
+        self.env["ir.config_parameter"].set_param("qrr_partner_ref", "27,1")
+        partner = self.env["res.partner"].create({"name": "Fabricated account holder"})
+        bank = self.env["res.partner.bank"].search(
+            [("acc_number", "=", "NL46ABNA0499998748")], limit=1
+        )
+        bank.partner_id = partner
+        lines = self._load_statement()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines.partner_id, partner)
+
     def test_blank_remittance_uses_the_transaction_instruction_id(self):
         self.env["ir.config_parameter"].set_param("qrr_partner_ref", "27,1")
         document = self._camt54_document()

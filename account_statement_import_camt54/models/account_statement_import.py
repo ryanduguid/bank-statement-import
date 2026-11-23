@@ -36,13 +36,20 @@ class AccountStatementImport(models.TransientModel):
     def _complete_stmts_vals(self, stmts_vals, journal, account_number):
         """Search partner from partner reference"""
         stmts_vals = super()._complete_stmts_vals(stmts_vals, journal, account_number)
-        for st_vals in stmts_vals:
-            for line_vals in st_vals["transactions"]:
-                if "partner_ref" in line_vals:
-                    partner_ref = line_vals.pop("partner_ref")
-                    partner = self.env["res.partner"].search(
-                        [("ref", "=", partner_ref)], limit=1
-                    )
-                    line_vals["partner_id"] = partner.id
-
+        line_refs = [
+            (line, line.pop("partner_ref"))
+            for statement in stmts_vals
+            for line in statement["transactions"]
+            if "partner_ref" in line
+        ]
+        references = {reference for _, reference in line_refs if reference}
+        if references:
+            partner_ids = {}
+            for partner in self.env["res.partner"].search_fetch(
+                [("ref", "in", list(references))], ["ref"]
+            ):
+                partner_ids.setdefault(partner.ref, partner.id)
+            for line, reference in line_refs:
+                if reference in partner_ids:
+                    line["partner_id"] = partner_ids[reference]
         return stmts_vals

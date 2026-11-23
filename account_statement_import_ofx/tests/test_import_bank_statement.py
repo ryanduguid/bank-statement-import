@@ -1,5 +1,7 @@
 import base64
 import datetime
+import re
+from unittest.mock import patch
 
 import odoo.tests.common as common
 from odoo.exceptions import UserError
@@ -43,7 +45,7 @@ class TestOfxFile(common.TransactionCase):
                 "bank_id": cls.env.ref("base.res_bank_1").id,
             }
         )
-        cls.env["account.journal"].create(
+        cls.journal_iban = cls.env["account.journal"].create(
             {
                 "name": "FR7630001007941234567890185",
                 "code": "BNK13",
@@ -64,6 +66,51 @@ class TestOfxFile(common.TransactionCase):
                 }
             )
             self.assertFalse(wizard._check_ofx(data_file=ofx_bin_wrong))
+
+    def test_missing_parser_falls_back_to_the_unsupported_format_error(self):
+        path = "account_statement_import_ofx/tests/test_ofx_file/test_ofx.ofx"
+        with file_open(path, "rb") as source:
+            payload = base64.b64encode(source.read())
+        wizard = self.asi_model.create(
+            {"statement_file": payload, "statement_filename": "statement.ofx"}
+        )
+        with (
+            patch.dict("sys.modules", {"ofxparse": None}),
+            self.assertRaisesRegex(UserError, "file format is not supported"),
+        ):
+            wizard.import_file_button()
+
+    def test_empty_ofx_account_returns_no_statement(self):
+        path = "account_statement_import_ofx/tests/test_ofx_file/test_ofx.ofx"
+        with file_open(path, "rb") as source:
+            empty_statement = re.sub(
+                rb"<STMTTRN>.*?</STMTTRN>", b"", source.read(), flags=re.DOTALL
+            )
+        self.assertEqual(self.asi_model._parse_file(empty_statement), [])
+
+    def test_filtered_ofx_line_does_not_affect_opening_balance(self):
+        path = "account_statement_import_ofx/tests/test_ofx_file/test_ofx.ofx"
+        with file_open(path, "rb") as source:
+            payload = source.read()
+        prepare_line = self.asi_model._prepare_ofx_transaction_line
+
+        def skip_one_line(transaction):
+            if transaction.id != "219378":
+                return prepare_line(transaction)
+            return None
+
+        with patch.object(
+            type(self.asi_model),
+            "_prepare_ofx_transaction_line",
+            side_effect=skip_one_line,
+        ):
+            _, _, statements = self.asi_model._parse_file(payload)[0]
+        (statement,) = statements
+        self.assertNotIn(
+            "219378", [line["unique_import_id"] for line in statement["transactions"]]
+        )
+        self.assertAlmostEqual(statement["balance_start"], 2436.56)
+        self.assertAlmostEqual(statement["balance_end_real"], 2156.56)
 
     def test_ofx_file_import(self):
         ofx_path = "account_statement_import_ofx/tests/test_ofx_file/test_ofx.ofx"
@@ -226,7 +273,7 @@ class TestOfxFile(common.TransactionCase):
         )
         self.assertEqual(self.env["ir.attachment"].search_count([]), attachment_count)
 
-    def no_test_check_journal_bank_account(self):
+    def test_import_matches_account_id_inside_journal_iban(self):
         ofx_path = "account_statement_import_ofx/tests/test_ofx_file/test_ofx_iban.ofx"
         with file_open(ofx_path, "rb") as ofx_file:
             ofx_bin = ofx_file.read()
@@ -237,3 +284,7 @@ class TestOfxFile(common.TransactionCase):
                 }
             )
             wizard.import_file_button()
+        statement = self.abs_model.search([("journal_id", "=", self.journal_iban.id)])
+        self.assertEqual(len(statement), 1)
+        self.assertEqual(statement.name, "12345678901")
+        self.assertTrue(statement.line_ids)

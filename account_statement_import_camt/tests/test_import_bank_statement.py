@@ -14,6 +14,7 @@ from pathlib import Path
 
 from lxml import etree
 
+from odoo.exceptions import UserError
 from odoo.tests.common import TransactionCase
 from odoo.tools.misc import file_path
 
@@ -216,8 +217,9 @@ class TestParser(TestParserCommon):
                 self.assertNotEqual(groups[0][:2], groups[1][:2])
             stream = BytesIO()
             with zipfile.ZipFile(stream, "w") as archive:
-                archive.writestr("first.xml", original)
-                archive.writestr("second.xml", etree.tostring(changed))
+                archive.writestr("statement.xml", original)
+                with self.assertWarnsRegex(UserWarning, "Duplicate name"):
+                    archive.writestr("statement.xml", etree.tostring(changed))
             with self.subTest(field=field, format="ZIP"):
                 groups = self.env["account.statement.import"]._parse_file(
                     stream.getvalue()
@@ -383,6 +385,41 @@ class TestImport(TransactionCase):
 
     def test_domestic_interim_balances_and_summary_entry(self):
         self._assert_domestic_interim_import(DOMESTIC_INTERIM_CAMT, "interim.xml")
+
+    def test_zip_import_skips_directory_entries(self):
+        with BytesIO() as stream:
+            with zipfile.ZipFile(stream, "w") as archive:
+                archive.writestr("statements/", b"")
+                archive.writestr("statements/interim.xml", DOMESTIC_INTERIM_CAMT)
+            self._assert_domestic_interim_import(stream.getvalue(), "interim.zip")
+
+    def test_zip_import_rejects_an_unsupported_member_before_creating_statements(self):
+        with BytesIO() as stream:
+            with zipfile.ZipFile(stream, "w") as archive:
+                archive.writestr("01-interim.xml", DOMESTIC_INTERIM_CAMT)
+                archive.writestr("02-other.xml", b"<other/>")
+            payload = base64.b64encode(stream.getvalue())
+        wizard = self.env["account.statement.import"].create(
+            {"statement_filename": "interim.zip", "statement_file": payload}
+        )
+        with self.assertRaisesRegex(UserError, "file format is not supported"):
+            wizard.import_file_button()
+        self.assertFalse(
+            self.env["account.bank.statement"].search(
+                [("name", "=", "Fabricated interim/1")]
+            )
+        )
+
+    def test_zip_with_only_directories_is_an_unsupported_format(self):
+        with BytesIO() as stream:
+            with zipfile.ZipFile(stream, "w") as archive:
+                archive.writestr("statements/", b"")
+            payload = base64.b64encode(stream.getvalue())
+        wizard = self.env["account.statement.import"].create(
+            {"statement_filename": "interim.zip", "statement_file": payload}
+        )
+        with self.assertRaisesRegex(UserError, "file format is not supported"):
+            wizard.import_file_button()
 
     def test_empty_zip_member_preserves_populated_statement_identity(self):
         empty_path = file_path(
