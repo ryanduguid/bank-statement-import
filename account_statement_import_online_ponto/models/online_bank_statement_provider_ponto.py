@@ -241,4 +241,5 @@ class OnlineBankStatementProvider(models.Model):
 
         The shared filter converts to the provider timezone exactly once.
         """
-        return datetime.strptime(datetime_str, "%Y-%m-%dT%H:%M:%S.%fZ")
+        time_format = "%H:%M:%S.%fZ" if "." in datetime_str else "%H:%M:%SZ"
+        return datetime.strptime(datetime_str, f"%Y-%m-%dT{time_format}")

@@ -229,7 +229,11 @@ class OnlineBankStatementProviderPayPal(models.Model):
             token, currency, date_since, date_until
         )
         if not transactions:
+            if not self.create_statement:
+                return [], {}
             balance = self._paypal_get_balance(token, currency, date_since)
+            if balance is None:
+                return [], {}
             return [], {"balance_start": balance, "balance_end_real": balance}
 
         # Normalize transactions, sort by date, and get lines
@@ -239,6 +243,8 @@ class OnlineBankStatementProviderPayPal(models.Model):
                 map(lambda x: self._paypal_transaction_to_lines(x), transactions)
             )
         )
+        if not self.create_statement:
+            return lines, {}
 
         first_transaction = transactions[0]
         first_transaction_id = first_transaction["transaction_info"]["transaction_id"]
@@ -256,8 +262,6 @@ class OnlineBankStatementProviderPayPal(models.Model):
                 )
             )
         balance_start = self._paypal_get_transaction_ending_balance(first_transaction)
-        balance_start -= self._paypal_get_transaction_total_amount(first_transaction)
-        balance_start -= self._paypal_get_transaction_fee_amount(first_transaction)
 
         last_transaction = first_transaction
         if len(transactions) > 1:
@@ -277,6 +281,19 @@ class OnlineBankStatementProviderPayPal(models.Model):
                     )
                 )
         balance_end = self._paypal_get_transaction_ending_balance(last_transaction)
+        if balance_start is None or balance_end is None:
+            with self.env.cr.savepoint():
+                if self._get_statement_filtered_lines(
+                    lines, {}, date_since, date_until
+                ):
+                    raise UserError(
+                        self.env._(
+                            "PayPal did not report the transaction's available balance."
+                        )
+                    )
+            return [], {}
+        balance_start -= self._paypal_get_transaction_total_amount(first_transaction)
+        balance_start -= self._paypal_get_transaction_fee_amount(first_transaction)
 
         return lines, {"balance_start": balance_start, "balance_end_real": balance_end}
 
@@ -376,12 +393,16 @@ class OnlineBankStatementProviderPayPal(models.Model):
         data = self._paypal_retrieve(url, token)
         balances = data.get("balances")
         if not isinstance(balances, list) or not balances:
-            raise UserError(
-                self.env._("PayPal did not return a balance for %s.", currency)
-            )
-        available_balance = balances[0].get("available_balance")
-        if not available_balance:
-            return Decimal()
+            return None
+        balance = balances[0]
+        available_balance = (
+            balance.get("available_balance") if isinstance(balance, dict) else None
+        )
+        if (
+            not isinstance(available_balance, dict)
+            or available_balance.get("value") is None
+        ):
+            return None
         return Decimal(available_balance["value"])
 
     def _paypal_get_transaction(self, token, transaction_id, timestamp):
@@ -496,8 +517,11 @@ class OnlineBankStatementProviderPayPal(models.Model):
     def _paypal_get_transaction_ending_balance(self, transaction):
         # NOTE: 'available_balance' instead of 'ending_balance' as per CSV file
         transaction_amount = transaction["transaction_info"].get("available_balance")
-        if not transaction_amount:
-            return Decimal()
+        if (
+            not isinstance(transaction_amount, dict)
+            or transaction_amount.get("value") is None
+        ):
+            return None
         return Decimal(transaction_amount["value"])
 
     @api.model

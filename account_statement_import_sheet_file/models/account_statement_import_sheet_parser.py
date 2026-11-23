@@ -8,6 +8,7 @@ import itertools
 import logging
 import math
 import re
+from collections.abc import Mapping
 from csv import reader
 from datetime import datetime
 from decimal import Decimal
@@ -48,15 +49,29 @@ class AccountStatementImportSheetParser(models.TransientModel):
                 str(value).strip() for value in csv_or_xlsx[1].row_values(header_line)
             ]
         else:
-            [next(csv_or_xlsx) for _i in range(header_line)]
-            header = [value.strip() for value in next(csv_or_xlsx)]
+            row = next(itertools.islice(csv_or_xlsx, max(header_line, 0), None), None)
+            if row is None:
+                raise UserError(
+                    self.env._(
+                        "The statement is missing header row %s.", header_line + 1
+                    )
+                )
+            header = [value.strip() for value in row]
         if mapping.offset_column:
             header = header[mapping.offset_column :]
         return header
 
     @api.model
     def parse(self, data_file, mapping, filename):
-        journal = self.env["account.journal"].browse(self.env.context.get("journal_id"))
+        journal = (
+            self.env["account.journal"]
+            .browse(self.env.context.get("journal_id"))
+            .exists()
+        )
+        if not journal:
+            raise UserError(
+                self.env._("Select an existing journal for the sheet import.")
+            )
         currency_code = (journal.currency_id or journal.company_id.currency_id).name
         account_number = journal.bank_account_id.acc_number
 
@@ -105,7 +120,15 @@ class AccountStatementImportSheetParser(models.TransientModel):
                 except ValueError:
                     continue
             else:
-                column_indexes.append(header.index(column_name_or_index))
+                try:
+                    column_indexes.append(header.index(column_name_or_index))
+                except ValueError as exc:
+                    raise UserError(
+                        self.env._(
+                            "The mapped column '%s' is missing from the header.",
+                            column_name_or_index,
+                        )
+                    ) from exc
         return column_indexes
 
     def _get_column_names(self):
@@ -240,15 +263,15 @@ class AccountStatementImportSheetParser(models.TransientModel):
 
     def _get_values_from_column(self, values, columns, column_name):
         indexes = columns[column_name]
-        content_l = []
-        column_count = len(values)
-        for index in indexes:
-            if isinstance(index, int):
-                if -column_count <= index < column_count:
-                    content_l.append(values[index])
-            else:
-                if index in values:
-                    content_l.append(values[index])
+        if isinstance(values, Mapping):
+            content_l = [values[index] for index in indexes if index in values]
+        else:
+            column_count = len(values)
+            content_l = [
+                values[index]
+                for index in indexes
+                if isinstance(index, int) and -column_count <= index < column_count
+            ]
         if not content_l:
             return None
         if all(isinstance(content, str) for content in content_l):

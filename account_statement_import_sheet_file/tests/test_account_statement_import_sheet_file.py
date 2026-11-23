@@ -250,6 +250,54 @@ class TestAccountStatementImportSheetFile(Common):
         with self.assertRaisesRegex(UserError, "Failed to parse file"):
             self.parser._parse_lines(self.sample_statement_map, b" \n \t\n \n", "USD")
 
+    def test_csv_reports_a_missing_header_row_or_mapped_column(self):
+        mapping = self._balance_sheet_mapping()
+        mapping.header_lines_skip_count = -1
+        self.assertEqual(
+            self.parser.parse_header(iter([[" Date "]]), mapping), ["Date"]
+        )
+        mapping.header_lines_skip_count = 1
+        data = (
+            b"Date,Amount,Details,Direction,Balance\n09/01/2026,25.00,Deposit,,45.00\n"
+        )
+        with self.assertRaisesRegex(UserError, "mapped column 'Label' is missing"):
+            self.parser._parse_lines(mapping, data, "USD")
+        mapping.header_lines_skip_count = 3
+        with self.assertRaisesRegex(UserError, "missing header row 3"):
+            self.parser._parse_lines(mapping, data, "USD")
+
+    def test_mapped_rows_can_use_named_and_numeric_keys(self):
+        columns = {"description": ["missing", "purpose", 4, 5]}
+        row = {"purpose": "Deposit", 5: "at branch"}
+        self.assertEqual(
+            self.parser._get_values_from_column(row, columns, "description"),
+            "Deposit at branch",
+        )
+        self.assertIsNone(
+            self.parser._get_values_from_column({}, columns, "description")
+        )
+
+    def test_import_without_a_description_uses_the_default_label(self):
+        mapping = self._balance_sheet_mapping()
+        mapping.description_column = False
+        data = b"Date,Amount,Direction,Balance\n09/01/2026,25.00,,45.00\n"
+        statement = self._import_synthetic_balance_sheet(data, mapping)
+        self.assertEqual(statement.line_ids.payment_ref, "N/A")
+
+    def test_spreadsheet_import_propagates_interrupts(self):
+        wizard = self._get_import_wizard("fixtures/sample_statement_en.csv")
+        wizard = wizard.with_context(account_statement_import_sheet_file_test=False)
+        with (
+            patch.object(type(self.parser), "parse", side_effect=KeyboardInterrupt),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            wizard.import_file_button()
+
+    def test_spreadsheet_import_rejects_a_stale_selected_journal(self):
+        wizard = self._get_import_wizard("fixtures/sample_statement_en.csv")
+        with self.assertRaisesRegex(UserError, "Select an existing journal"):
+            wizard.with_context(journal_id=-1).import_file_button()
+
     def test_csv_defaults_to_utf8_when_encoding_is_cleared(self):
         mapping = self.sample_statement_map
         mapping.write(
