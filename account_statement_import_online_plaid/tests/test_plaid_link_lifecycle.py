@@ -40,7 +40,6 @@ window.Plaid = {
                 session.destroyed++;
                 frame.remove();
                 if (isIOSChrome) {
-                    root.removeAttribute("id");
                     root.style.height = rootHeight;
                     document.body.style.overflow = overflow;
                 }
@@ -115,6 +114,15 @@ RETRY_AND_NAVIGATION = (
     check(failed.destroyed === 1 && !failed.frame.isConnected
         && notifications.length === 2 && calls.length === 1,
         "a Link error must clean up, notify and leave the account alone");
+
+    const beforeOpen = window.linkSessions.length;
+    const cancelledBeforeOpen = login(env, {params});
+    env.bus.dispatchEvent(new Event("ACTION_MANAGER:UPDATE"));
+    await cancelledBeforeOpen;
+    check(window.linkSessions.length === beforeOpen
+        && notifications.length === 2 && calls.length === 1,
+        "cancelling before the SDK opens must leave the account alone");
+
     for (const abandon of [
         () => env.bus.dispatchEvent(new Event("ACTION_MANAGER:UPDATE")),
         () => window.dispatchEvent(new Event("pagehide")),
@@ -154,8 +162,8 @@ MOBILE_ACCOUNT_SELECTION = (
     root.style.setProperty("height", "94vh", "important");
     document.body.style.setProperty("height", "95vh", "important");
     const bodyOverflow = document.body.style.overflow;
-    function checkLayout() {
-        check(root.id === "odoo-fixture-root" && root.style.height === "94vh"
+    function checkLayout(expectedId = "odoo-fixture-root") {
+        check(root.getAttribute("id") === expectedId && root.style.height === "94vh"
             && root.style.getPropertyPriority("height") === "important",
             "Link must restore the document root ID and height with priority");
         check(document.body.style.height === "95vh"
@@ -173,6 +181,7 @@ MOBILE_ACCOUNT_SELECTION = (
         "early exit must survive a viewport resize after the iframe closes");
     checkLayout();
 
+    root.removeAttribute("id");
     await startLink();
     await waitFor(() => window.linkSessions[1]?.frame.isConnected,
         "the mobile sync button must reopen Link");
@@ -182,7 +191,8 @@ MOBILE_ACCOUNT_SELECTION = (
         "navigation must close the mobile action before it receives a callback");
     check(abandoned.destroyed === 1 && !abandoned.frame.isConnected,
         "an abandoned mobile Link must destroy its handler once");
-    checkLayout();
+    checkLayout(null);
+    root.id = "odoo-fixture-root";
     await startLink();
     await waitFor(() => window.linkSessions[2]?.frame.isConnected,
         "the mobile sync button must reopen after navigation");

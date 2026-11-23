@@ -275,23 +275,25 @@ class LifecycleTests(unittest.TestCase):
         release = threading.Event()
         write = browser._coverage_write
         request = browser._websocket_request
-        worker = None
+        worker = threading.Thread(
+            target=browser._coverage_binding, args=(BINDING, "{}", 1), daemon=True
+        )
 
         def delayed_write(context, generation, data):
             if threading.current_thread() is not threading.main_thread():
                 started.set()
-                if not release.wait(2):
-                    raise RuntimeError("Test did not release coverage writer")
+                self.assertTrue(release.wait(2), "Test did not release coverage writer")
             return write(context, generation, data)
 
+        def wait_for_worker():
+            worker.join(2)
+            self.assertFalse(worker.is_alive())
+
         def begin_binding(method, *, params):
-            nonlocal worker
             result = request(method, params=params)
             if method == "Runtime.evaluate":
-                worker = threading.Thread(
-                    target=browser._coverage_binding, args=(BINDING, "{}", 1)
-                )
                 worker.start()
+                self.addCleanup(wait_for_worker)
                 self.assertTrue(started.wait(2))
             return result
 
@@ -302,11 +304,20 @@ class LifecycleTests(unittest.TestCase):
                 browser.stop()
         finally:
             release.set()
-            if worker is not None:
-                worker.join(2)
-                self.assertFalse(worker.is_alive())
+        wait_for_worker()
+        self.assertIsNone(browser._coverage_error)
         self.assertTrue(browser.closed)
         self.assertEqual(sum("error" in record for record in self.records()), 1)
+
+    def test_unexpected_browser_shutdown_produces_a_collection_error_receipt(self):
+        browser = self.browser(18)
+        browser._handlers["Runtime.executionContextCreated"]({"id": 1})
+        Browser.stop(browser)
+
+        with self.assertRaisesRegex(AssertionError, "CDP called after shutdown"):
+            browser._coverage_collect()
+
+        self.assertEqual(self.records(), [{"error": "CDP called after shutdown"}])
 
     def test_child_setup_during_collection_cannot_cross_the_completion_cutoff(self):
         for major in (18, 19):
@@ -382,13 +393,14 @@ class LifecycleTests(unittest.TestCase):
         if during_collection:
             browser._websocket_request = collect
         try:
-            with patch("odoo_coverage.CHILD_SETUP_TIMEOUT", 2, create=True):
-                # The receiver cannot acknowledge until collection releases
-                # every level of this shared, reentrant lock.
-                with browser._coverage_lock:
-                    if not during_collection:
-                        attach()
-                    browser.stop()
+            # The receiver waits for every level of the reentrant lock.
+            with (
+                patch("odoo_coverage.CHILD_SETUP_TIMEOUT", 2, create=True),
+                browser._coverage_lock,
+            ):
+                if not during_collection:
+                    attach()
+                browser.stop()
         finally:
             for worker in workers:
                 worker.join(2)
@@ -487,9 +499,10 @@ class LifecycleTests(unittest.TestCase):
     def test_host_result_completion_race_keeps_the_original_collection_error(self):
         for major in (18, 19):
             with self.subTest(major=major):
+
                 class ConcurrentCompletion(Future):
                     def set_exception(self, error):
-                        # Complete the host result just after the collector's done check.
+                        # Complete the host result after the collector's done check.
                         self.set_result("native result")
                         super().set_exception(error)
 
@@ -584,13 +597,11 @@ class LifecycleTests(unittest.TestCase):
                     def release_proxy(
                         method, *, params, request=request, failure=failure
                     ):
+                        self.assertEqual(method, "Target.setAutoAttach")
+                        self.assertFalse(params["autoAttach"])
                         result = request(method, params=params)
-                        if (
-                            method == "Target.setAutoAttach"
-                            and not params["autoAttach"]
-                        ):
-                            if failure == "release":
-                                raise RuntimeError("release failed")
+                        if failure == "release":
+                            raise RuntimeError("release failed")
                         return result
 
                     browser._websocket_request = release_proxy
@@ -1027,15 +1038,16 @@ class FrameProxyTests(unittest.TestCase):
         workers = []
 
         def release_proxy(method, *, params):
-            if method == "Target.setAutoAttach" and not params["autoAttach"]:
-                worker = threading.Thread(
-                    target=self.browser._handlers["Target.detachedFromTarget"],
-                    kwargs={"sessionId": "frame"},
-                )
-                workers.append(worker)
-                worker.start()
-                worker.join(2)
-                self.assertFalse(worker.is_alive(), "Proxy lock blocks CDP receiver")
+            self.assertEqual(method, "Target.setAutoAttach")
+            self.assertFalse(params["autoAttach"])
+            worker = threading.Thread(
+                target=self.browser._handlers["Target.detachedFromTarget"],
+                kwargs={"sessionId": "frame"},
+            )
+            workers.append(worker)
+            worker.start()
+            worker.join(2)
+            self.assertFalse(worker.is_alive(), "Proxy lock blocks CDP receiver")
             return request(method, params=params)
 
         self.browser._websocket_request = release_proxy
@@ -1045,6 +1057,7 @@ class FrameProxyTests(unittest.TestCase):
             for worker in workers:
                 worker.join(2)
                 self.assertFalse(worker.is_alive())
+        self.assertEqual(len(workers), 1)
         self.assertFalse(self.browser._frame_proxy.sessions)
         self.assertTrue(self.browser.closed)
 
@@ -1082,7 +1095,3 @@ class FrameProxyTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "unsupported auto-attachment"):
                 common.ChromeBrowser(major)
             self.assertTrue(instances[-1].closed)
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -11,6 +11,7 @@ import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from unittest.mock import patch
 
 
 class PythonReportTests(unittest.TestCase):
@@ -89,14 +90,16 @@ class PythonReportTests(unittest.TestCase):
     def test_import_exposes_inventory_without_writing_a_report(self):
         native_data = self.data_file.read_bytes()
         reporter = runpy.run_path(str(Path(__file__).with_name("python_report.py")))
-        self.assertEqual(
-            set(reporter["addon_sources"](self.root)),
-            {
-                str(self.loaded),
-                str(self.unloaded),
-                str(self.loaded.with_name("__init__.py")),
-            },
-        )
+        anchor = self.root / "relative-root"
+        anchor.mkdir()
+        expected = {
+            str(self.loaded.resolve()),
+            str(self.unloaded.resolve()),
+            str(self.loaded.with_name("__init__.py").resolve()),
+        }
+        for root in (self.root, anchor / ".."):
+            with self.subTest(root=root):
+                self.assertEqual(set(reporter["addon_sources"](root)), expected)
         self.assertEqual(self.data_file.read_bytes(), native_data)
         self.assertFalse(self.output.exists())
 
@@ -140,19 +143,31 @@ class PythonReportTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("Manifest must be a literal dictionary", result.stderr)
 
+    def _link_external_source(self, target):
+        self.unloaded.unlink()
+        try:
+            self.unloaded.symlink_to(target)
+        except OSError:
+            self.skipTest("This host does not permit file symlinks")
+
     def test_a_link_to_external_source_is_refused(self):
         with tempfile.TemporaryDirectory(prefix="oca-external-source-") as outside:
             target = Path(outside) / "private.py"
             target.write_text("answer = 31\n")
-            self.unloaded.unlink()
-            try:
-                self.unloaded.symlink_to(target)
-            except OSError:
-                self.skipTest("This host does not permit file symlinks")
+            self._link_external_source(target)
             result = self.report()
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Python source must be a regular owned file", result.stderr)
             self.assertFalse(self.output.exists())
+
+    def test_missing_symlink_permissions_are_reported_as_a_skip(self):
+        with (
+            patch.object(Path, "symlink_to", side_effect=PermissionError()),
+            self.assertRaisesRegex(
+                unittest.SkipTest, "This host does not permit file symlinks"
+            ),
+        ):
+            self._link_external_source(self.unloaded.with_name("synthetic.py"))
 
     def test_an_empty_addon_inventory_is_refused(self):
         self.git("rm", "--cached", "--", "fabricated_addon/__manifest__.py")

@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 class ImportHookTests(unittest.TestCase):
@@ -37,7 +38,7 @@ class ImportHookTests(unittest.TestCase):
         environment = {
             "PYTHONPATH": os.pathsep.join((str(Path(__file__).parent), str(self.root)))
         }
-        if process_config := os.environ.get("COVERAGE_PROCESS_CONFIG"):
+        if (process_config := os.environ.get("COVERAGE_PROCESS_CONFIG")) is not None:
             environment["COVERAGE_PROCESS_CONFIG"] = process_config
         if os.name == "nt":
             environment["SystemRoot"] = os.environ["SystemRoot"]
@@ -74,11 +75,19 @@ class ImportHookTests(unittest.TestCase):
                     f"Native Odoo {major} browser coverage hook installed\n",
                 )
 
-    def test_unconfigured_startup_leaves_ordinary_imports_alone(self):
+    def _assert_ordinary_import(self):
         result = self.run_import(19, configured=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stderr, "")
         self.assertFalse(self.receipts.exists())
+
+    def test_unconfigured_startup_leaves_ordinary_imports_alone(self):
+        self._assert_ordinary_import()
+        with patch.dict(os.environ, {"COVERAGE_PROCESS_CONFIG": ""}):
+            self._assert_ordinary_import()
+        with patch.dict(os.environ):
+            os.environ.pop("COVERAGE_PROCESS_CONFIG", None)
+            self._assert_ordinary_import()
 
     def test_a_different_host_major_is_refused_before_installation(self):
         result = self.run_import(19, expected=18)

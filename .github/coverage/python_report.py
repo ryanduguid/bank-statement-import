@@ -12,6 +12,7 @@ import coverage
 
 
 def addon_sources(root):
+    root = Path(root).resolve()
     tracked = (
         subprocess.check_output(
             ["git", "-C", str(root), "ls-files", "-z", "--", "*.py"],
@@ -57,7 +58,7 @@ def addon_sources(root):
 
 
 def write_report(root, data_file, output):
-    sources = addon_sources(Path(root).resolve())
+    sources = addon_sources(root)
     collector = coverage.Coverage(data_file=data_file)
     collector.load()
     if not collector.get_data().measured_files():
