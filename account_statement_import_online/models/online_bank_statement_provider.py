@@ -121,11 +121,20 @@ class OnlineBankStatementProvider(models.Model):
         return records
 
     def write(self, vals):
-        """Set provider_id on journal after creation."""
+        """Keep the journal's compatibility fields in sync with the provider."""
+        if "journal_id" in vals:
+            previous_journals = self._get_linked_journals()
         result = super().write(vals)
+        if "journal_id" in vals:
+            (previous_journals - self.journal_id)._clear_online_provider_link()
         if "journal_id" in vals or "service" in vals:
             self._update_journals()
         return result
+
+    def _get_linked_journals(self):
+        return self.journal_id.filtered(
+            lambda journal: journal.online_bank_statement_provider_id in self
+        )
 
     def _update_journals(self):
         """Update journal with this provider.
@@ -143,16 +152,8 @@ class OnlineBankStatementProvider(models.Model):
 
     def unlink(self):
         """Reset journals."""
-        journals = self.mapped("journal_id")
-        if journals:
-            vals = {
-                "bank_statements_source": "undefined",
-                "online_bank_statement_provider": False,
-                "online_bank_statement_provider_id": False,
-            }
-            journals.write(vals)
-        result = super().unlink()
-        return result
+        self._get_linked_journals()._clear_online_provider_link()
+        return super().unlink()
 
     @api.model
     def _get_available_services(self):
