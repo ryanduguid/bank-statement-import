@@ -5,12 +5,12 @@
 import base64
 import difflib
 import pprint
-import tempfile
 import zipfile
 from copy import deepcopy
 from datetime import date
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import patch
 
 from lxml import etree
 
@@ -78,7 +78,7 @@ class TestParserCommon(TransactionCase):
         :param max_diff_count: maximum nr of lines that can differ (default: 2)
         :type max_diff_count: int
         """
-        max_diff_count = max_diff_count or 2
+        max_diff_count = 2 if max_diff_count is None else max_diff_count
         assert max_diff_count >= 0
         diff = self._get_files_diffs(*map(self._to_filepath, (inputfile, goldenfile)))
         self.assertLessEqual(
@@ -103,13 +103,15 @@ class TestParserCommon(TransactionCase):
         # Read the output file, store the expected imported values
         with open(file_path(goldenfile_path)) as goldf:
             gold_name, gold_lines = goldf.name, goldf.readlines()
-        # Save the imported values in a tmp file to compare them w/ the expected values
-        with tempfile.NamedTemporaryFile(mode="w+", suffix=".pydata") as tempf:
-            pprint.pprint(res, tempf, width=160)
-            tempf.seek(0)
-            out_name, out_lines = tempf.name, tempf.readlines()
-        # Return a list of diffs
-        return list(difflib.unified_diff(gold_lines, out_lines, gold_name, out_name))
+        rendered = pprint.pformat(res, width=160) + "\n"
+        return list(
+            difflib.unified_diff(
+                gold_lines,
+                rendered.splitlines(keepends=True),
+                gold_name,
+                str(inputfile_path),
+            )
+        )
 
     def _to_filepath(self, file):
         """Converts ``obj`` to a ``pathlib.Path`` object
@@ -238,7 +240,103 @@ class TestParser(TestParserCommon):
         self._do_parse_test("test-camt053-txdtls", "golden-camt053-txdtls.pydata")
 
     def test_parse_no_ntry(self):
-        self._do_parse_test("test-camt053-no-ntry", "golden-camt053-no-ntry.pydata")
+        sample_dir = Path("account_statement_import_camt/tests/samples")
+        self._do_parse_test(
+            sample_dir / "test-camt053-no-ntry",
+            sample_dir / "golden-camt053-no-ntry.pydata",
+            max_diff_count=0,
+        )
+
+    def test_batched_details_keep_their_own_amounts_and_narration(self):
+        document = etree.fromstring(DOMESTIC_INTERIM_CAMT)
+        details = document.find(".//{*}NtryDtls")
+        namespace = etree.QName(details).namespace
+        first = details.find("{*}TxDtls")
+        etree.SubElement(first, f"{{{namespace}}}Amt", Ccy="EUR").text = "25.00"
+        second = etree.SubElement(details, f"{{{namespace}}}TxDtls")
+        etree.SubElement(second, f"{{{namespace}}}Amt", Ccy="EUR").text = "0.00"
+        third = etree.SubElement(details, f"{{{namespace}}}TxDtls")
+        amount_details = etree.SubElement(third, f"{{{namespace}}}AmtDtls")
+        transaction_amount = etree.SubElement(amount_details, f"{{{namespace}}}TxAmt")
+        etree.SubElement(
+            transaction_amount, f"{{{namespace}}}Amt", Ccy="EUR"
+        ).text = "0.00"
+
+        _, _, statements = self.parser.parse(etree.tostring(document))
+        credit, zero, nested_zero, debit = statements[0]["transactions"]
+        self.assertEqual(
+            [line["amount"] for line in (credit, zero, nested_zero, debit)],
+            [25, 0, 0, -10],
+        )
+        self.assertIn("1 Example Road", credit["narration"])
+        self.assertNotIn("1 Example Road", zero["narration"])
+        self.assertNotIn("account_number", zero)
+
+    def test_batched_details_with_missing_amount_book_the_aggregate_once(self):
+        document = etree.fromstring(DOMESTIC_INTERIM_CAMT)
+        details = document.find(".//{*}NtryDtls")
+        namespace = etree.QName(details).namespace
+        first = details.find("{*}TxDtls")
+        entry = details.getparent()
+        reference = etree.Element(f"{{{namespace}}}NtryRef")
+        reference.text = "synthetic-batch-reference"
+        entry.insert(0, reference)
+        etree.SubElement(details, f"{{{namespace}}}TxDtls")
+
+        for allocated in (False, True):
+            with self.subTest(allocated=allocated):
+                if allocated:
+                    amount = etree.SubElement(first, f"{{{namespace}}}Amt", Ccy="EUR")
+                    amount.text = "5.00"
+                _, _, (statement,) = self.parser.parse(etree.tostring(document))
+                credit, debit = statement["transactions"]
+                self.assertEqual((credit["amount"], debit["amount"]), (25, -10))
+                self.assertEqual(credit["ref"], "synthetic-batch-reference")
+                self.assertNotIn("1 Example Road", credit["narration"])
+
+    def test_detail_hook_can_allocate_the_booked_amount_explicitly(self):
+        document = etree.fromstring(DOMESTIC_INTERIM_CAMT)
+        details = document.find(".//{*}NtryDtls")
+        namespace = etree.QName(details).namespace
+        second = etree.SubElement(details, f"{{{namespace}}}TxDtls")
+        etree.SubElement(second, f"{{{namespace}}}Amt", Ccy="EUR").text = "0.00"
+        parse_details = self.parser.parse_transaction_details
+
+        def allocate_amount(ns, node, transaction):
+            parse_details(ns, node, transaction)
+            if node.find("{*}Amt") is None and transaction["amount"] == 25:
+                transaction["amount"] = float(transaction["amount"])
+
+        with patch.object(
+            type(self.parser), "parse_transaction_details", side_effect=allocate_amount
+        ):
+            _, _, (statement,) = self.parser.parse(etree.tostring(document))
+
+        self.assertEqual(
+            [line["amount"] for line in statement["transactions"]], [25, 0, -10]
+        )
+        self.assertIn("1 Example Road", statement["transactions"][0]["narration"])
+
+    def test_reported_balances_take_precedence_over_prior_and_interim_balances(self):
+        document = etree.fromstring(DOMESTIC_INTERIM_CAMT)
+        statement = document.find(".//{*}Stmt")
+        first, last = statement.findall("{*}Bal")
+        first.find("{*}Amt").text = "900.00"
+        last.find("{*}Amt").text = "999.00"
+        for code, amount in (
+            ("PRCD", "995.00"),
+            ("OPBD", "1000.00"),
+            ("CLBD", "1015.00"),
+        ):
+            balance = deepcopy(first)
+            balance.find(".//{*}Cd").text = code
+            balance.find("{*}Amt").text = amount
+            statement.append(balance)
+
+        _, _, (result,) = self.parser.parse(etree.tostring(document))
+        self.assertEqual(
+            (result["balance_start"], result["balance_end_real"]), (1000, 1015)
+        )
 
 
 class TestImport(TransactionCase):

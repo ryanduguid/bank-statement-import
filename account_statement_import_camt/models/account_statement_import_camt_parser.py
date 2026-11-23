@@ -14,6 +14,11 @@ CAMT_REPORT_TAGS = {
     "053": ("BkToCstmrStmt", "Stmt"),
     "054": ("BkToCstmrDbtCdtNtfctn", "Ntfctn"),
 }
+DETAIL_AMOUNT_XPATH = "./ns:Amt | ./ns:AmtDtls/ns:TxAmt/ns:Amt"
+
+
+class _BookedAmount(float):
+    """Numeric fallback for details that have yet to report their allocation."""
 
 
 class AccountStatementImportCamtParser(models.AbstractModel):
@@ -191,7 +196,8 @@ class AccountStatementImportCamtParser(models.AbstractModel):
             "ref",
         )
         amount = self.parse_amount(ns, node)
-        if amount != 0.0:
+        # Only a missing detail amount inherits the entry amount.
+        if amount != 0.0 or node.xpath(DETAIL_AMOUNT_XPATH, namespaces={"ns": ns}):
             transaction["amount"] = amount
         # remote party values
         party_type = "Dbtr"
@@ -344,16 +350,31 @@ class AccountStatementImportCamtParser(models.AbstractModel):
         )
 
         details_nodes = node.xpath("./ns:NtryDtls/ns:TxDtls", namespaces={"ns": ns})
-        if len(details_nodes) == 0:
+        batched = len(details_nodes) > 1
+        booked_amount = (
+            _BookedAmount(transaction["amount"]) if batched else transaction["amount"]
+        )
+        transactions = []
+        for detail_node in details_nodes:
+            detail = dict(
+                transaction,
+                amount=booked_amount,
+                narration=transaction["narration"].copy(),
+            )
+            self.parse_transaction_details(ns, detail_node, detail)
+            if batched and detail["amount"] is booked_amount:
+                # The bank reported an aggregate booking without a full allocation.
+                transactions.clear()
+                self.add_value_from_node(
+                    ns, node, ["./ns:AcctSvcrRef", "./ns:NtryRef"], transaction, "ref"
+                )
+                break
+            self.generate_narration(detail)
+            transactions.append(detail)
+        if not transactions:
             self.generate_narration(transaction)
-            yield transaction
-            return
-        transaction_base = transaction
-        for node in details_nodes:
-            transaction = transaction_base.copy()
-            self.parse_transaction_details(ns, node, transaction)
-            self.generate_narration(transaction)
-            yield transaction
+            transactions.append(transaction)
+        yield from transactions
 
     def get_balance_amounts(self, ns, node):
         """Return opening and closing balance.
@@ -367,7 +388,8 @@ class AccountStatementImportCamtParser(models.AbstractModel):
         """
         start_balance_node = None
         end_balance_node = None
-        for node_name in ["OPBD", "PRCD", "CLBD", "ITBD"]:
+        # The reported opening balance takes precedence over the previous closing.
+        for node_name in ["PRCD", "OPBD", "CLBD", "ITBD"]:
             code_expr = (
                 f'./ns:Bal/ns:Tp/ns:CdOrPrtry/ns:Cd[text()="{node_name}"]/../../..'
             )
@@ -378,9 +400,9 @@ class AccountStatementImportCamtParser(models.AbstractModel):
                 elif node_name == "CLBD":
                     end_balance_node = balance_node[0]
                 else:
-                    if not start_balance_node:
+                    if start_balance_node is None:
                         start_balance_node = balance_node[0]
-                    if not end_balance_node:
+                    if end_balance_node is None:
                         end_balance_node = balance_node[-1]
         return (
             self.parse_amount(ns, start_balance_node),
