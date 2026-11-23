@@ -3,7 +3,7 @@
 # Copyright 2022-2023 Therp BV (https://therp.nl)
 # Copyright 2026 Michael Tietz (MT Software) <mtietz@mt-software.de>
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
-import logging
+import pprint
 from datetime import date, datetime, timedelta
 from unittest import mock
 from urllib.error import HTTPError
@@ -11,13 +11,11 @@ from urllib.error import HTTPError
 from dateutil.relativedelta import relativedelta
 from odoo_test_helper import FakeModelLoader
 
-from odoo import _, fields
+from odoo import fields
 from odoo.exceptions import UserError
 from odoo.modules import neutralize
 from odoo.tests import common
 from odoo.tools import mute_logger
-
-_logger = logging.getLogger(__name__)
 
 mock_obtain_statement_data = (
     "odoo.addons.account_statement_import_online.tests."
@@ -101,6 +99,49 @@ class TestAccountBankAccountStatementImportOnline(common.TransactionCase):
         self._getExpectedStatements(0)
         self.provider.with_context(step={"hours": 8})._scheduled_pull()
         self._getExpectedStatements(1)
+
+    def test_scheduled_pull_skips_inactive_and_future_providers(self):
+        for active, next_run in (
+            (False, self.now - timedelta(days=2)),
+            (True, self.now + timedelta(days=2)),
+        ):
+            with self.subTest(active=active):
+                self.provider.write({"active": active, "next_run": next_run})
+                with mock.patch(mock_obtain_statement_data) as obtain_data:
+                    self.OnlineBankStatementProvider._scheduled_pull()
+                obtain_data.assert_not_called()
+                self.assertEqual(self.provider.next_run, next_run)
+                self.assertFalse(self.provider.last_successful_run)
+
+    def test_update_schedule_changes_with_interval_and_active_state(self):
+        provider = self.provider.with_context(lang="en_US")
+        for vals, label in (
+            ({"interval_type": "days", "interval_number": 3}, "3 Day(s)"),
+            ({"active": False}, "Inactive"),
+            ({"interval_type": "weeks", "interval_number": 2}, "Inactive"),
+            ({"active": True}, "2 Week(s)"),
+        ):
+            with self.subTest(vals=vals):
+                provider.write(vals)
+                self.assertEqual(provider.update_schedule, label)
+
+    def test_update_schedule_uses_interval_label_in_context_language(self):
+        self.env["res.lang"]._activate_lang("fr_FR")
+        selection = self.env["ir.model.fields.selection"].search(
+            [
+                ("field_id.model", "=", self.provider._name),
+                ("field_id.name", "=", "interval_type"),
+                ("value", "=", "days"),
+            ]
+        )
+        selection.ensure_one().with_context(lang="fr_FR").name = "Jour(s)"
+        self.provider.write({"interval_type": "days", "interval_number": 3})
+        self.assertEqual(
+            self.provider.with_context(lang="en_US").update_schedule, "3 Day(s)"
+        )
+        self.assertEqual(
+            self.provider.with_context(lang="fr_FR").update_schedule, "3 Jour(s)"
+        )
 
     def test_pull_skip_duplicates_by_unique_import_id(self):
         self.provider.statement_creation_mode = "weekly"
@@ -267,6 +308,22 @@ class TestAccountBankAccountStatementImportOnline(common.TransactionCase):
         self.assertEqual(self.provider.last_successful_run, datetime(2021, 8, 10, 12))
         self.assertEqual(self.provider.next_run, datetime(2021, 8, 14))
 
+    def test_interrupted_scheduled_pull_preserves_schedule(self):
+        end = self.now - timedelta(days=4)
+        start = end - timedelta(days=1)
+        self.provider.write(
+            {"last_successful_run": start, "next_run": end, "interval_type": "days"}
+        )
+        with (
+            mock.patch(mock_obtain_statement_data, side_effect=KeyboardInterrupt),
+            self.assertRaises(KeyboardInterrupt),
+            self.env.cr.savepoint(),
+        ):
+            self.OnlineBankStatementProvider._scheduled_pull()
+        self.assertEqual(self.provider.last_successful_run, start)
+        self.assertEqual(self.provider.next_run, end)
+        self._getExpectedLines(0)
+
     def test_pull_crash(self):
         self.provider.statement_creation_mode = "weekly"
         with self.assertRaisesRegex(Exception, "Expected"):
@@ -322,6 +379,22 @@ class TestAccountBankAccountStatementImportOnline(common.TransactionCase):
         ).create(vals)
         wizard.action_pull()
         self._getExpectedStatements(1)
+
+    def test_debug_wizard_displays_data_without_importing(self):
+        start, end = datetime(2026, 9, 1), datetime(2026, 9, 1, 12)
+        self.provider.tz = "UTC"
+        data = self._get_statement_line_data(start.date())
+        wizard = self.OnlineBankStatementPullWizard.with_context(
+            active_model=self.provider._name, active_id=self.provider.id
+        ).create({"date_since": start, "date_until": end})
+        with mock.patch(mock_obtain_statement_data, return_value=data) as obtain_data:
+            action = wizard.action_debug()
+        obtain_data.assert_called_once()
+        self.assertEqual(action["res_model"], "online.bank.statement.pull.debug")
+        debug = self.env[action["res_model"]].browse(action["res_id"])
+        self.assertEqual(debug.data, pprint.pformat(list(data)))
+        self._getExpectedStatements(0)
+        self._getExpectedLines(0)
 
     def test_compatibility_provider_pull_action_imports_transactions(self):
         self._check_compatibility_pull_action(self.provider)
@@ -673,6 +746,31 @@ class TestAccountBankAccountStatementImportOnline(common.TransactionCase):
         self.assertEqual(replacement.journal_id, stale_journal)
         self.assertNotEqual(replacement, self.provider)
 
+    def test_compatibility_relinks_an_archived_provider(self):
+        self.provider.active = False
+        self.journal.bank_statements_source = "manual"
+        self.assertFalse(self.journal.online_bank_statement_provider_id)
+
+        self.journal.write(
+            {
+                "bank_statements_source": "online",
+                "online_bank_statement_provider": self.provider.service,
+            }
+        )
+
+        self.assertEqual(self.journal.online_bank_statement_provider_id, self.provider)
+        self.assertFalse(self.provider.active)
+        self.journal.online_bank_statement_provider = self.provider.service
+        self.assertEqual(self.journal.online_bank_statement_provider_id, self.provider)
+
+    def test_journal_offers_online_statement_source_and_provider(self):
+        sources = dict(self.journal._get_bank_statements_available_sources())
+        self.assertIn("online", sources)
+        self.assertIn("undefined", sources)
+        services = self.journal.fields_get(["online_bank_statement_provider"])
+        selection = dict(services["online_bank_statement_provider"]["selection"])
+        self.assertIn(self.provider.service, selection)
+
     def test_unlink_provider_keeps_other_statement_source(self):
         self.journal.bank_statements_source = "manual"
         self.journal.online_bank_statement_provider_id = self.provider
@@ -693,27 +791,15 @@ class TestAccountBankAccountStatementImportOnline(common.TransactionCase):
         self.assertFalse(self.provider.active)
 
     def _getExpectedStatements(self, expected_length):
-        """Check for length of statement recordset, with helpfull logging."""
+        """Check the number of statements and identify any unexpected records."""
         statements = self.AccountBankStatement.search(
             [("journal_id", "=", self.journal.id)], order="date asc"
         )
-        actual_length = len(statements)
-        # If length not expected, log information about statements.
-        if actual_length != expected_length:
-            if actual_length == 0:
-                _logger.warning(
-                    _("No statements found in journal"),
-                )
-            else:
-                _logger.warning(
-                    _("Names and dates for statements found: {}").format(
-                        ", ".join(f"{stmt.name} - {stmt.date}" for stmt in statements)
-                    )
-                )
-
-        # Now do the normal assert.
-        self.assertEqual(len(statements), expected_length)
-        # If we got expected number, return them.
+        self.assertEqual(
+            len(statements),
+            expected_length,
+            f"Statements found: {[(stmt.name, stmt.date) for stmt in statements]}",
+        )
         return statements
 
     def _getExpectedLines(self, expected_length):
