@@ -3,7 +3,7 @@
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest import mock
 from urllib.error import HTTPError
@@ -969,10 +969,120 @@ class TestAccountBankAccountStatementImportOnlinePayPal(common.TransactionCase):
         self.assertTrue(
             all(query["balance_affecting_records_only"] == ["Y"] for query in queries)
         )
-        with mock.patch(
-            _provider_class + "._paypal_retrieve",
-            return_value={"transaction_details": []},
+        for reply in ({"transaction_details": []}, {"total_pages": None}):
+            with (
+                self.subTest(reply=reply),
+                mock.patch(
+                    _provider_class + "._paypal_retrieve", return_value=reply
+                ) as retrieve,
+            ):
+                self.assertIsNone(
+                    provider._paypal_get_transaction("synthetic", "missing", self.today)
+                )
+                retrieve.assert_called_once()
+
+    def test_balance_lookups_use_single_or_distinct_transactions(self):
+        journal = self.AccountJournal.create(
+            {"name": "Synthetic PayPal", "code": "PST", "type": "bank"}
+        )
+        provider = self.OnlineBankStatementProvider.new(
+            {"service": "paypal", "journal_id": journal.id}
+        )
+        date = self.today
+        transaction_id = "fabricated-transaction"
+        first_transaction = {
+            "transaction_info": {
+                "transaction_id": transaction_id,
+                "transaction_updated_date": date,
+                "transaction_amount": {"value": "7.50"},
+                "fee_amount": {"value": "-0.25"},
+                "available_balance": {"value": "120.00"},
+            }
+        }
+        last_date = date + timedelta(hours=1)
+        last_transaction = {
+            "transaction_info": {
+                "transaction_id": "fabricated-last",
+                "transaction_updated_date": last_date,
+                "transaction_amount": {"value": "20.00"},
+                "available_balance": {"value": "140.00"},
+            },
+        }
+        offset = timedelta(hours=10)
+        since = date.replace(tzinfo=timezone(offset))
+        until = since + timedelta(days=1)
+        with (
+            mock.patch(
+                _provider_class + "._paypal_get_token", return_value="synthetic"
+            ),
+            mock.patch(
+                _provider_class + "._paypal_get_transactions",
+                return_value=[first_transaction],
+            ) as transactions,
+            mock.patch(
+                _provider_class + "._paypal_get_transaction",
+                return_value=first_transaction,
+            ) as lookup,
         ):
-            self.assertIsNone(
-                provider._paypal_get_transaction("synthetic", "missing", self.today)
+            lines, balances = provider._obtain_statement_data(since, until)
+            transactions.assert_called_once_with(
+                "synthetic",
+                self.env.company.currency_id.name,
+                date - offset,
+                date + timedelta(days=1) - offset,
             )
+            lookup.assert_called_once_with("synthetic", transaction_id, date)
+
+            transactions.return_value = [last_transaction, first_transaction]
+            lookup.reset_mock()
+            lookup.side_effect = [first_transaction, last_transaction]
+            multiple_lines, multiple_balances = provider._obtain_statement_data(
+                since, until
+            )
+            self.assertEqual(
+                lookup.call_args_list,
+                [
+                    mock.call("synthetic", transaction_id, date),
+                    mock.call("synthetic", "fabricated-last", last_date),
+                ],
+            )
+        self.assertEqual(
+            balances,
+            {
+                "balance_start": Decimal("112.75"),
+                "balance_end_real": Decimal("120.00"),
+            },
+        )
+        self.assertEqual([line["amount"] for line in lines], ["7.50", "-0.25"])
+        self.assertEqual(lines[0]["payment_ref"], transaction_id)
+        self.assertNotIn("partner_name", lines[0])
+        self.assertEqual(
+            [line["amount"] for line in multiple_lines], ["7.50", "-0.25", "20.00"]
+        )
+        self.assertEqual(
+            multiple_balances,
+            {
+                "balance_start": Decimal("112.75"),
+                "balance_end_real": Decimal("140.00"),
+            },
+        )
+
+    def test_optional_payer_name_preserves_payment_reference_format(self):
+        provider = self.OnlineBankStatementProvider.new({"service": "paypal"})
+        email = "billing@example.invalid"
+        transaction_id = "fabricated-transaction"
+        transaction = {
+            "transaction_info": {
+                "transaction_id": transaction_id,
+                "transaction_updated_date": self.today,
+                "transaction_amount": {"value": "1.00"},
+            },
+            "payer_info": {"email_address": email, "payer_name": None},
+        }
+        line = provider._paypal_transaction_to_lines(transaction)[0]
+        self.assertEqual(line["payment_ref"], transaction_id)
+        self.assertNotIn("partner_name", line)
+
+        transaction["payer_info"] = {"payer_name": {"email_address": email}}
+        line = provider._paypal_transaction_to_lines(transaction)[0]
+        self.assertEqual(line["payment_ref"], f"{transaction_id} ({email})")

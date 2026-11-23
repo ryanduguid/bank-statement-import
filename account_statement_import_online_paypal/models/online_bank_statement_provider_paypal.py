@@ -233,12 +233,7 @@ class OnlineBankStatementProviderPayPal(models.Model):
             return [], {"balance_start": balance, "balance_end_real": balance}
 
         # Normalize transactions, sort by date, and get lines
-        transactions = list(
-            sorted(
-                transactions,
-                key=lambda transaction: self._paypal_get_transaction_date(transaction),
-            )
-        )
+        transactions = sorted(transactions, key=self._paypal_get_transaction_date)
         lines = list(
             itertools.chain.from_iterable(
                 map(lambda x: self._paypal_transaction_to_lines(x), transactions)
@@ -264,21 +259,23 @@ class OnlineBankStatementProviderPayPal(models.Model):
         balance_start -= self._paypal_get_transaction_total_amount(first_transaction)
         balance_start -= self._paypal_get_transaction_fee_amount(first_transaction)
 
-        last_transaction = transactions[-1]
-        last_transaction_id = last_transaction["transaction_info"]["transaction_id"]
-        last_transaction_date = self._paypal_get_transaction_date(last_transaction)
-        last_transaction = self._paypal_get_transaction(
-            token, last_transaction_id, last_transaction_date
-        )
-        if not last_transaction:
-            raise UserError(
-                self.env._(
-                    "Failed to resolve transaction %(last_transaction_id)s "
-                    "(%(last_transaction_date)s)",
-                    last_transaction_id=last_transaction_id,
-                    last_transaction_date=last_transaction_date,
-                )
+        last_transaction = first_transaction
+        if len(transactions) > 1:
+            last_transaction = transactions[-1]
+            last_transaction_id = last_transaction["transaction_info"]["transaction_id"]
+            last_transaction_date = self._paypal_get_transaction_date(last_transaction)
+            last_transaction = self._paypal_get_transaction(
+                token, last_transaction_id, last_transaction_date
             )
+            if not last_transaction:
+                raise UserError(
+                    self.env._(
+                        "Failed to resolve transaction %(last_transaction_id)s "
+                        "(%(last_transaction_date)s)",
+                        last_transaction_id=last_transaction_id,
+                        last_transaction_date=last_transaction_date,
+                    )
+                )
         balance_end = self._paypal_get_transaction_ending_balance(last_transaction)
 
         return lines, {"balance_start": balance_start, "balance_end_real": balance_end}
@@ -296,16 +293,16 @@ class OnlineBankStatementProviderPayPal(models.Model):
     @api.model
     def _paypal_transaction_to_lines(self, data):
         transaction = data["transaction_info"]
-        payer = data["payer_info"]
+        payer = data.get("payer_info") or {}
         transaction_id = transaction["transaction_id"]
-        event_code = transaction["transaction_event_code"]
+        event_code = transaction.get("transaction_event_code")
         date = self._paypal_get_transaction_date(data)
         total_amount = self._paypal_get_transaction_total_amount(data)
         fee_amount = self._paypal_get_transaction_fee_amount(data)
         transaction_subject = transaction.get("transaction_subject")
         transaction_note = transaction.get("transaction_note")
         invoice = transaction.get("invoice_id")
-        payer_name = payer.get("payer_name", {})
+        payer_name = payer.get("payer_name") or {}
         payer_email = payer_name.get("email_address")
         if invoice:
             invoice = self.env._("Invoice %s") % invoice
@@ -411,7 +408,7 @@ class OnlineBankStatementProviderPayPal(models.Model):
                     == transaction_id
                 ):
                     return transaction
-            if params["page"] >= data.get("total_pages", 1):
+            if params["page"] >= (data.get("total_pages") or 1):
                 return None
             params["page"] += 1
 
