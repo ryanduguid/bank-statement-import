@@ -4,7 +4,7 @@
 # Copyright 2026 Michael Tietz (MT Software) <mtietz@mt-software.de>
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from unittest import mock
 from urllib.error import HTTPError
 
@@ -23,6 +23,9 @@ mock_obtain_statement_data = (
     "odoo.addons.account_statement_import_online.tests."
     + "online_bank_statement_provider_dummy.OnlineBankStatementProviderDummy."
     + "_obtain_statement_data"
+)
+provider_module = (
+    "odoo.addons.account_statement_import_online.models.online_bank_statement_provider"
 )
 
 
@@ -173,6 +176,36 @@ class TestAccountBankAccountStatementImportOnline(common.TransactionCase):
     def test_interval_type_weeks(self):
         self.provider.interval_type = "weeks"
         self.provider._compute_update_schedule()
+
+    def test_catchup_selects_the_last_run_before_now(self):
+        now = datetime(2026, 1, 1, 12)
+        period = timedelta(minutes=7)
+        self.provider.write({"interval_type": "minutes", "interval_number": 7})
+        with mock.patch(provider_module + ".datetime") as clock:
+            for clock_time, start, expected in (
+                (now, now - 1_000_000 * period, now - period),
+                (now + timedelta(seconds=1), now - 10 * period, now),
+                (now, now + period, now + period),
+            ):
+                with self.subTest(clock_time=clock_time, start=start):
+                    clock.now.return_value = clock_time
+                    self.provider.next_run = start
+                    self.provider._adjust_schedule()
+                    self.assertEqual(self.provider.next_run, expected)
+
+    def test_catchup_preserves_calendar_intervals_from_an_extension(self):
+        self.provider.next_run = datetime(2024, 1, 31, 12)
+        with (
+            mock.patch(provider_module + ".datetime") as clock,
+            mock.patch.object(
+                type(self.provider),
+                "_get_next_run_period",
+                return_value=relativedelta(months=1),
+            ),
+        ):
+            clock.now.return_value = datetime(2024, 4, 1, 12)
+            self.provider._adjust_schedule()
+        self.assertEqual(self.provider.next_run, datetime(2024, 3, 29, 12))
 
     def test_pull_no_crash(self):
         self.provider.statement_creation_mode = "weekly"
