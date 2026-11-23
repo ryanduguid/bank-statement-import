@@ -104,10 +104,12 @@ class TestPlaidInterface(common.TransactionCase):
     def test_get_transactions(self, transactions_get):
         interface_model = self.env["plaid.interface"]
         client = interface_model._client("client_id", "secret", "sandbox")
-        transactions_get.return_value = {
-            "transactions": TRANSACTIONS,
-            "total_transactions": len(TRANSACTIONS),
-        }
+        first_page = TRANSACTIONS[:1]
+        second_page = TRANSACTIONS[1:]
+        transactions_get.side_effect = [
+            {"transactions": page, "total_transactions": len(TRANSACTIONS)}
+            for page in (first_page, second_page)
+        ]
 
         access_token = "isaccesstoken"
         start_date = datetime.datetime.now() - relativedelta(months=1)
@@ -116,9 +118,32 @@ class TestPlaidInterface(common.TransactionCase):
             client, access_token, start_date, end_date, TRANSACTIONS[0]["account_id"]
         )
 
-        self.assertTrue(res)
-        request = transactions_get.call_args.args[0]
-        self.assertEqual(request.options.account_ids, [TRANSACTIONS[0]["account_id"]])
+        self.assertEqual(res, TRANSACTIONS)
+        self.assertEqual(first_page, TRANSACTIONS[:1])
+        requests = [call.args[0] for call in transactions_get.call_args_list]
+        self.assertEqual([request.options.offset for request in requests], [0, 1])
+        for request in requests:
+            self.assertEqual(
+                request.options.account_ids, [TRANSACTIONS[0]["account_id"]]
+            )
+            self.assertEqual(request.start_date, start_date.date())
+            self.assertEqual(request.end_date, end_date.date())
+
+    @patch("plaid.api.plaid_api.PlaidApi.transactions_get")
+    def test_get_transactions_rejects_an_incomplete_empty_page(self, transactions_get):
+        interface_model = self.env["plaid.interface"]
+        client = interface_model._client("client_id", "synthetic", "sandbox")
+        transactions_get.side_effect = [
+            {"transactions": TRANSACTIONS[:1], "total_transactions": 2},
+            {"transactions": [], "total_transactions": 2},
+        ]
+        start = datetime.datetime(2026, 1, 1)
+        end = datetime.datetime(2026, 1, 31)
+        with self.assertRaisesRegex(ValidationError, "incomplete transaction page"):
+            interface_model._get_transactions(
+                client, "synthetic", start, end, TRANSACTIONS[0]["account_id"]
+            )
+        self.assertEqual(transactions_get.call_count, 2)
 
     @patch(
         "plaid.api.plaid_api.PlaidApi.transactions_get",

@@ -64,28 +64,17 @@ class PlaidInterface(models.AbstractModel):
         return response["access_token"]
 
     def _get_transactions(self, client, access_token, start_date, end_date, account_id):
-        options = TransactionsGetRequestOptions(
-            count=500,
-            account_ids=[account_id],
-        )
-        request = TransactionsGetRequest(
-            access_token=access_token,
-            start_date=start_date.date(),
-            end_date=end_date.date(),
-            options=options,
-        )
-        try:
-            response = client.transactions_get(request)
-        except plaid.ApiException as e:
-            raise ValidationError(_("Error getting transactions: %s") % e.body) from e
-        transactions = response["transactions"]
-        while len(transactions) < response["total_transactions"]:
-            options.offset = len(transactions)
+        start = start_date.date()
+        end = end_date.date()
+        transactions = []
+        while True:
             request = TransactionsGetRequest(
                 access_token=access_token,
-                start_date=start_date.date(),
-                end_date=end_date.date(),
-                options=options,
+                start_date=start,
+                end_date=end,
+                options=TransactionsGetRequestOptions(
+                    count=500, account_ids=[account_id], offset=len(transactions)
+                ),
             )
             try:
                 response = client.transactions_get(request)
@@ -93,5 +82,11 @@ class PlaidInterface(models.AbstractModel):
                 raise ValidationError(
                     _("Error getting transactions: %s") % e.body
                 ) from e
-            transactions.extend(response["transactions"])
-        return transactions
+            page = response["transactions"]
+            transactions.extend(page)
+            if len(transactions) >= response["total_transactions"]:
+                return transactions
+            if not page:
+                raise ValidationError(
+                    _("Plaid returned an incomplete transaction page. Try again later.")
+                )
