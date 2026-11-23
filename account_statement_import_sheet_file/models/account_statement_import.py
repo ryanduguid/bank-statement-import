@@ -16,6 +16,7 @@ class AccountStatementImport(models.TransientModel):
         return (
             self.env["account.journal"]
             .browse(self.env.context.get("journal_id"))
+            .exists()
             .default_sheet_mapping_id
         )
 
@@ -33,7 +34,7 @@ class AccountStatementImport(models.TransientModel):
                 return Parser.parse(
                     data_file, self.sheet_mapping_id, self.statement_filename
                 )
-            except BaseException as exc:
+            except Exception as exc:
                 if self.env.context.get("account_statement_import_sheet_file_test"):
                     raise
                 _logger.warning("Sheet parser error", exc_info=True)

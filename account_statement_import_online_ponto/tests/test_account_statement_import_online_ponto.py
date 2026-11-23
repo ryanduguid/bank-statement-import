@@ -1,15 +1,12 @@
 # Copyright 2020 Florent de Labarre
 # Copyright 2022 Therp BV <https://therp.nl>.
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
-import logging
 from datetime import datetime, timedelta
 from unittest import mock
 
-from odoo import _, fields
+from odoo import fields
 from odoo.exceptions import UserError
 from odoo.tests import common
-
-_logger = logging.getLogger(__name__)
 
 _module_ns = "odoo.addons.account_statement_import_online_ponto"
 _interface_class = _module_ns + ".models.ponto_interface" + ".PontoInterface"
@@ -326,6 +323,41 @@ class TestAccountStatementImportOnlinePonto(common.TransactionCase):
                 expected_balance_end=15.56,  # Includes 4.25 from statement before.
             )
 
+    def test_manual_pull_stops_before_the_pagination_lookback(self):
+        self.provider.ponto_date_field = "execution_date"
+        self.provider.ponto_last_identifier = "scheduled-checkpoint"
+        recent = FOUR_TRANSACTIONS[1]
+        within_lookback = dict(
+            FOUR_TRANSACTIONS[2],
+            attributes=dict(
+                FOUR_TRANSACTIONS[2]["attributes"], executionDate="2019-11-01T00:00:00Z"
+            ),
+        )
+        old = dict(
+            EARLY_TRANSACTIONS[0],
+            attributes=dict(
+                EARLY_TRANSACTIONS[0]["attributes"],
+                executionDate="2019-10-31T23:59:59Z",
+            ),
+        )
+        with (
+            self.mock_login(),
+            self.mock_set_access_account(),
+            mock.patch(
+                _interface_class + "._get_transactions",
+                side_effect=[[recent, within_lookback], [old]],
+            ) as retrieve,
+        ):
+            self.provider._pull(datetime(2019, 11, 8), datetime(2019, 11, 25))
+        self.assertEqual(
+            [call.args[-1] for call in retrieve.call_args_list],
+            [False, within_lookback["id"]],
+        )
+        (statement,) = self._get_statements_from_journal(expected_count=1)
+        self.assertEqual(len(statement.line_ids), 1)
+        self.assertEqual(statement.line_ids.amount, recent["attributes"]["amount"])
+        self.assertEqual(self.provider.ponto_last_identifier, "scheduled-checkpoint")
+
     def test_ponto_missing_or_repeated_page_cursor_aborts_the_pull(self):
         first, second, third = FOUR_TRANSACTIONS[:3]
         self.provider.ponto_last_identifier = "previously-imported"
@@ -478,18 +510,11 @@ class TestAccountStatementImportOnlinePonto(common.TransactionCase):
         return statements
 
     def _check_line_count(self, lines, expected_count=0):
-        """Check wether lines contain expected number of transactions.
-
-        If count differs, show the unique id's of lines that are present.
-        """
-        # If we do not get all lines, show lines we did get:
-        line_count = len(lines)
-        if line_count != expected_count:
-            _logger.info(
-                _("Statement contains transactions: %s"),
-                " ".join(lines.mapped("unique_import_id")),
-            )
-        self.assertEqual(line_count, expected_count)
+        self.assertEqual(
+            len(lines),
+            expected_count,
+            f"Statement contains transactions: {lines.mapped('unique_import_id')}",
+        )
 
     def _check_statement_amounts(
         self, statement, expected_amounts, expected_balance_end=0.0

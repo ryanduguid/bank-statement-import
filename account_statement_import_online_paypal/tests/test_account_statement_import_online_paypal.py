@@ -1045,7 +1045,7 @@ class TestAccountBankAccountStatementImportOnlinePayPal(common.TransactionCase):
             }
         }
 
-    def test_no_reported_balance_rejects_an_empty_statement(self):
+    def test_empty_period_without_a_balance_can_advance_the_pull(self):
         provider = self._balance_provider()
         provider.journal_id.currency_id = self.currency_eur
         since = self.today - timedelta(hours=1)
@@ -1057,9 +1057,101 @@ class TestAccountBankAccountStatementImportOnlinePayPal(common.TransactionCase):
                     _provider_class + "._paypal_retrieve",
                     side_effect=[{"transaction_details": []}, payload],
                 ),
-                self.assertRaisesRegex(UserError, "did not return a balance for EUR"),
             ):
-                provider._obtain_statement_data(since, self.today)
+                self.assertEqual(
+                    provider._obtain_statement_data(since, self.today), ([], {})
+                )
+
+    def test_empty_period_distinguishes_zero_from_a_missing_available_balance(self):
+        provider = self._balance_provider()
+        provider.journal_id.currency_id = self.currency_eur
+        since = self.today - timedelta(hours=1)
+        balance = {
+            "currency": "EUR",
+            "total_balance": {"currency_code": "EUR", "value": "20.00"},
+        }
+        with (
+            self.mock_token(),
+            mock.patch(_provider_class + "._paypal_retrieve") as retrieve,
+        ):
+            retrieve.side_effect = [
+                {"transaction_details": []},
+                {"balances": [balance]},
+            ]
+            self.assertEqual(
+                provider._obtain_statement_data(since, self.today), ([], {})
+            )
+
+            retrieve.side_effect = [
+                {"transaction_details": []},
+                {
+                    "balances": [
+                        dict(
+                            balance,
+                            available_balance={"currency_code": "EUR", "value": "0.00"},
+                        )
+                    ]
+                },
+            ]
+            lines, values = provider._obtain_statement_data(since, self.today)
+        self.assertEqual(lines, [])
+        self.assertEqual(values["balance_start"], Decimal("0.00"))
+        self.assertEqual(values["balance_end_real"], Decimal("0.00"))
+
+    def test_boundary_transaction_requires_an_available_balance(self):
+        first = self._first_balance_transaction()
+        balance_lookup = {
+            "transaction_info": {
+                key: value
+                for key, value in first["transaction_info"].items()
+                if key != "available_balance"
+            }
+        }
+        provider = self._balance_provider()
+        since = self.today - timedelta(hours=1)
+        until = self.today + timedelta(hours=1)
+        with (
+            self._mock_statement_balances([first], [balance_lookup]),
+            self.assertRaisesRegex(UserError, "transaction's available balance"),
+        ):
+            provider._obtain_statement_data(since, until)
+
+    def test_missing_boundary_balance_does_not_block_already_imported_transactions(
+        self,
+    ):
+        first = self._first_balance_transaction()
+        provider = self._balance_provider()
+        since = self.today - timedelta(hours=1)
+        until = self.today + timedelta(hours=1)
+        with self._mock_statement_balances([first], [first]):
+            data = provider._obtain_statement_data(since, until)
+        statement = provider._create_or_update_statement(data, since, until)
+        self.assertEqual(len(statement.line_ids), 2)
+
+        balance_lookup = {"transaction_info": dict(first["transaction_info"])}
+        del balance_lookup["transaction_info"]["available_balance"]
+        with self._mock_statement_balances([first], [balance_lookup]):
+            self.assertEqual(provider._obtain_statement_data(since, until), ([], {}))
+        self.assertEqual(len(statement.line_ids), 2)
+
+    def test_standalone_import_skips_balance_requests(self):
+        provider = self._balance_provider()
+        provider.create_statement = False
+        transaction = self._first_balance_transaction()
+        since = self.today - timedelta(hours=1)
+        for entries in ([], [transaction]):
+            with (
+                self.subTest(has_transactions=bool(entries)),
+                self._mock_statement_balances(entries, []) as (_, transaction_lookup),
+                mock.patch(_provider_class + "._paypal_get_balance") as account_lookup,
+            ):
+                lines, values = provider._obtain_statement_data(since, self.today)
+            transaction_lookup.assert_not_called()
+            account_lookup.assert_not_called()
+            self.assertEqual(values, {})
+            self.assertEqual(
+                [line["amount"] for line in lines], ["7.50", "-0.25"] if entries else []
+            )
 
     def test_balance_lookup_reuses_single_transaction(self):
         date = self.today
