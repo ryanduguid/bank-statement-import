@@ -8,8 +8,10 @@ import itertools
 import logging
 import math
 import re
+from csv import reader
 from datetime import datetime
 from decimal import Decimal
+from importlib import import_module
 from io import BytesIO, StringIO
 from os import path
 from zipfile import BadZipFile
@@ -22,22 +24,6 @@ from odoo import api, models
 from odoo.exceptions import UserError
 
 _logger = logging.getLogger(__name__)
-
-try:
-    from csv import reader
-
-    import xlrd
-    from xlrd.xldate import xldate_as_datetime
-except (OSError, ImportError) as err:  # pragma: no cover
-    _logger.error(err)
-
-try:
-    import chardet
-except ImportError:
-    _logger.warning(
-        "chardet library not found, please install it "
-        "from http://pypi.python.org/pypi/chardet"
-    )
 
 
 class AccountStatementImportSheetParser(models.TransientModel):
@@ -175,6 +161,10 @@ class AccountStatementImportSheetParser(models.TransientModel):
 
     def _parse_data_xlrd(self, mapping, data_file):
         try:
+            xlrd = import_module("xlrd")
+        except (ImportError, OSError):
+            return None
+        try:
             workbook = xlrd.open_workbook(
                 file_contents=data_file,
                 encoding_override=(
@@ -194,8 +184,12 @@ class AccountStatementImportSheetParser(models.TransientModel):
         """Decode `data_file` with `encoding`."""
         try:
             return data_file.decode(encoding or "utf-8")
-        except UnicodeDecodeError:
+        except UnicodeDecodeError as error:
             # Try auto guessing the format
+            try:
+                chardet = import_module("chardet")
+            except (ImportError, OSError):
+                raise error from None
             detected_encoding = chardet.detect(data_file).get("encoding", False)
             if not detected_encoding:
                 _logger.debug("Failed decoding detection")
@@ -268,7 +262,9 @@ class AccountStatementImportSheetParser(models.TransientModel):
         if isinstance(csv_or_xlsx, Worksheet):
             rows = range(label_line, csv_or_xlsx.max_row - footer_count)
         elif isinstance(csv_or_xlsx, tuple):
-            rows = range(label_line, csv_or_xlsx[1].nrows - footer_count)
+            xlrd = import_module("xlrd")
+            book, sheet = csv_or_xlsx[:2]
+            rows = range(label_line, sheet.nrows - footer_count)
         elif footer_count > 0:
             # Look ahead by the footer size in CSV records, buffering only that tail.
             records, lookahead = itertools.tee(csv_or_xlsx)
@@ -285,14 +281,12 @@ class AccountStatementImportSheetParser(models.TransientModel):
                     for cell in csv_or_xlsx[row + 1][mapping.offset_column :]
                 ]
             elif isinstance(csv_or_xlsx, tuple):
-                book = csv_or_xlsx[0]
-                sheet = csv_or_xlsx[1]
                 values = []
                 for col_index in range(mapping.offset_column, sheet.row_len(row)):
                     cell_type = sheet.cell_type(row, col_index)
                     cell_value = sheet.cell_value(row, col_index)
                     if cell_type == xlrd.XL_CELL_DATE:
-                        cell_value = xldate_as_datetime(cell_value, book.datemode)
+                        cell_value = xlrd.xldate_as_datetime(cell_value, book.datemode)
                     values.append(cell_value)
             else:
                 values = list(row)
@@ -512,8 +506,7 @@ class AccountStatementImportSheetParser(models.TransientModel):
             if bank_account is not None:
                 line["bank_account"] = bank_account
 
-            if line:
-                lines.append(line)
+            lines.append(line)
         return lines
 
     @api.model

@@ -22,7 +22,7 @@ class AccountStatementImport(models.TransientModel):
                 sanitized_account_number, account_field="sanitized_acctid"
             )
             journal_id = self.env.context.get("journal_id")
-            if journal_id and journal.id != journal_id:
+            if journal and journal_id and journal.id != journal_id:
                 raise UserError(
                     _(
                         "The journal found for the file is not consistent with the "

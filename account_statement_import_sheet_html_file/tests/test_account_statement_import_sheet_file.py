@@ -67,8 +67,7 @@ class TestAccountStatementImportSheetFile(Common):
                     f"<tr><td>{label}</td></tr></table></html>"
                 ).encode(actual)
                 with patch(
-                    "odoo.addons.account_statement_import_sheet_file.models"
-                    ".account_statement_import_sheet_parser.chardet.detect",
+                    "chardet.detect",
                     return_value={"encoding": actual},
                 ) as detect:
                     records = self.parser._parse_data_html(
@@ -85,8 +84,7 @@ class TestAccountStatementImportSheetFile(Common):
         ) as file:
             data = file.read()
         with patch(
-            "odoo.addons.account_statement_import_sheet_file.models"
-            ".account_statement_import_sheet_parser.chardet.detect",
+            "chardet.detect",
             return_value={"encoding": None},
         ) as detect:
             _book, sheet = self.parser._parse_data(self.sample_statement_map, data)

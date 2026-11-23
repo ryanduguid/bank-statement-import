@@ -2,6 +2,7 @@
 # License AGPL-3 - See http://www.gnu.org/licenses/agpl-3.0.html
 
 import base64
+from datetime import date
 from unittest import mock
 
 import odoo.tests.common as common
@@ -93,6 +94,159 @@ class TestAccountStatementImportFile(common.TransactionCase):
         stmts_vals = [{"transactions": [{"payment_ref": ""}]}]
         with self.assertRaises(UserError):
             import_wizard._complete_stmts_vals(stmts_vals, self.journal_1, "1111111111")
+
+    def _import_fixture(self, name, opening, closing, transactions, *later_statements):
+        parsed = (
+            self.env.company.currency_id.name,
+            None,
+            [
+                {
+                    "name": name,
+                    "balance_start": opening,
+                    "balance_end_real": closing,
+                    "transactions": transactions,
+                },
+                *later_statements,
+            ],
+        )
+        with mock.patch.object(
+            type(self.import_wizard), "_parse_file", return_value=parsed
+        ):
+            return self.import_wizard.import_file_button()
+
+    def test_import_ignores_identical_rows_with_the_same_reference(self):
+        debit = {
+            "payment_ref": "Bank fee",
+            "date": date(2026, 9, 2),
+            "amount": -10,
+            "unique_import_id": "fee",
+            "sequence": 1,
+        }
+        action = self._import_fixture(
+            "First statement",
+            100,
+            125,
+            [
+                debit,
+                dict(debit, sequence=2),
+                dict(
+                    debit,
+                    payment_ref="Settlement",
+                    amount=20,
+                    unique_import_id=False,
+                    sequence=3,
+                ),
+                dict(
+                    debit,
+                    payment_ref="Interest",
+                    amount=15,
+                    unique_import_id=False,
+                    sequence=4,
+                ),
+            ],
+        )
+        statement = self.env["account.bank.statement"].search(action["domain"])
+        self.assertRecordValues(
+            statement, [{"balance_start": 100, "balance_end_real": 125}]
+        )
+        self.assertEqual(sorted(statement.line_ids.mapped("amount")), [-10, 15, 20])
+        self.assertEqual(statement.journal_id, self.journal_1)
+        self.assertEqual(self.journal_1.bank_statements_source, "file_import_oca")
+
+    def test_import_counts_previously_posted_rows_once_for_balance_and_warning(self):
+        first = {
+            "payment_ref": "Initial credit",
+            "date": date(2026, 9, 2),
+            "amount": 10,
+            "unique_import_id": "first",
+        }
+        second = dict(
+            first, payment_ref="Settlement", amount=-15, unique_import_id="second"
+        )
+        self._import_fixture("Earlier statement", 100, 95, [dict(first), dict(second)])
+        third = dict(
+            first,
+            payment_ref="Later credit",
+            date=date(2026, 9, 3),
+            amount=20,
+            unique_import_id="third",
+        )
+        action = self._import_fixture(
+            "Later statement", 100, 115, [dict(first), dict(first), dict(second), third]
+        )
+        self.assertEqual(action["tag"], "display_notification")
+        self.assertIn(
+            "2 transactions had already been imported", action["params"]["message"]
+        )
+        statement = self.env["account.bank.statement"].search(
+            action["params"]["next"]["domain"]
+        )
+        self.assertRecordValues(
+            statement, [{"balance_start": 95, "balance_end_real": 115}]
+        )
+        self.assertEqual(statement.line_ids.mapped("amount"), [20])
+
+    def test_import_detects_posted_rows_across_statements_in_one_file(self):
+        first = {
+            "payment_ref": "Initial credit",
+            "date": date(2026, 9, 2),
+            "amount": 10,
+            "unique_import_id": "first",
+        }
+        later = dict(
+            first,
+            payment_ref="Later credit",
+            date=date(2026, 9, 3),
+            amount=20,
+            unique_import_id="later",
+        )
+        action = self._import_fixture(
+            "First statement",
+            100,
+            110,
+            [dict(first)],
+            {
+                "name": "Later statement",
+                "balance_start": 100,
+                "balance_end_real": 130,
+                "transactions": [dict(first), later],
+            },
+        )
+        self.assertEqual(action["tag"], "display_notification")
+        self.assertIn(
+            "1 transaction had already been imported", action["params"]["message"]
+        )
+        statements = self.env["account.bank.statement"].search(
+            action["params"]["next"]["domain"], order="date, id"
+        )
+        self.assertRecordValues(
+            statements,
+            [
+                {"balance_start": 100, "balance_end_real": 110},
+                {"balance_start": 110, "balance_end_real": 130},
+            ],
+        )
+        self.assertEqual(statements[0].line_ids.mapped("amount"), [10])
+        self.assertEqual(statements[1].line_ids.mapped("amount"), [20])
+        self.assertEqual(statements[0].attachment_ids, statements[1].attachment_ids)
+        self.assertEqual(len(statements[0].attachment_ids), 1)
+
+    def test_import_rejects_conflicting_rows_with_the_same_reference(self):
+        line = {
+            "payment_ref": "Ambiguous reference",
+            "date": date(2026, 9, 2),
+            "amount": -10,
+            "unique_import_id": "ambiguous",
+        }
+        with self.assertRaisesRegex(UserError, "different transactions with the same"):
+            self._import_fixture(
+                "Invalid statement", 100, 80, [line, dict(line, amount=-20)]
+            )
+        self.assertFalse(
+            self.env["account.bank.statement"].search(
+                [("name", "=", "Invalid statement")]
+            )
+        )
 
     def test_exact_account_precedes_substring(self):
         self.journal_1.bank_account_id = self.env["res.partner.bank"].create(
