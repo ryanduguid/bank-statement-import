@@ -389,3 +389,14 @@ class TestAccountStatementImportFile(common.TransactionCase):
                     (usd.name, account_number, statements), result
                 )
         self.assertEqual(result["statement_ids"], [])
+
+    def test_import_reports_the_selected_journal_has_no_account(self):
+        journal = self.journal_1
+        journal.write({"type": "general", "default_account_id": False})
+        result = {"statement_ids": [], "notifications": []}
+        statements = [{"transactions": [{"date": date(2026, 1, 2), "amount": 10}]}]
+        with self.assertRaisesRegex(UserError, "Bank Accounting Account is not set"):
+            self.import_wizard.import_single_statement(
+                (self.env.company.currency_id.name, False, statements), result
+            )
+        self.assertEqual(result["statement_ids"], [])

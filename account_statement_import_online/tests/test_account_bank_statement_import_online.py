@@ -100,6 +100,19 @@ class TestAccountBankAccountStatementImportOnline(common.TransactionCase):
         self.provider.with_context(step={"hours": 8})._scheduled_pull()
         self._getExpectedStatements(1)
 
+    def test_unconfigured_statement_interval_reports_a_clear_error(self):
+        provider = self.OnlineBankStatementProvider.new(
+            {"statement_creation_mode": False}
+        )
+        with self.assertRaisesRegex(
+            UserError, "Choose a supported transaction interval"
+        ):
+            provider._get_statement_date_since(self.now)
+        with self.assertRaisesRegex(
+            UserError, "Choose a supported transaction interval"
+        ):
+            provider._get_statement_date_step()
+
     def test_scheduled_pull_creates_standalone_lines(self):
         self.provider.write(
             {"next_run": self.now - relativedelta(days=15), "create_statement": False}

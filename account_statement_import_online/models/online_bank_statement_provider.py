@@ -14,6 +14,7 @@ from dateutil.relativedelta import MO, relativedelta
 from pytz import timezone, utc
 
 from odoo import _, api, fields, models
+from odoo.exceptions import UserError
 
 from odoo.addons.base.models.res_partner import _tz_get
 
@@ -489,6 +490,7 @@ class OnlineBankStatementProvider(models.Model):
             return date + relativedelta(weekday=MO(-1))
         elif self.statement_creation_mode == "monthly":
             return date.replace(day=1)
+        raise UserError(self.env._("Choose a supported transaction interval."))
 
     def _get_statement_date_step(self):
         self.ensure_one()
@@ -512,6 +514,7 @@ class OnlineBankStatementProvider(models.Model):
                 second=0,
                 microsecond=0,
             )
+        raise UserError(self.env._("Choose a supported transaction interval."))
 
     def _get_next_run_period(self):
         self.ensure_one()

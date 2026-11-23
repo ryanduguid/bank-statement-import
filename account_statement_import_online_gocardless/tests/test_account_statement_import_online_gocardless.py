@@ -727,3 +727,19 @@ class TestAccountBankAccountStatementImportOnlineGocardless(common.TransactionCa
             with self.assertRaisesRegex(UserError, "renew the authorization"):
                 self.provider._pull(since, until)
         request.assert_not_called()
+
+    def test_dry_requisition_probe_does_not_reset_the_existing_link(self):
+        account_id = self.provider.gocardless_account_id
+        expiry = self.provider.gocardless_requisition_expiration
+        messages = self.provider.message_ids
+        with (
+            self.mock_requisition(),
+            self.mock_account() as account,
+            self.mock_agreement() as agreement,
+        ):
+            account.return_value = {"id": "OTHER-ACCOUNT", "iban": "DIFFERENT"}
+            self.assertFalse(self.provider._gocardless_finish_requisition(dry=True))
+        agreement.assert_not_called()
+        self.assertEqual(self.provider.gocardless_account_id, account_id)
+        self.assertEqual(self.provider.gocardless_requisition_expiration, expiry)
+        self.assertEqual(self.provider.message_ids, messages)

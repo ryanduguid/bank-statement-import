@@ -197,6 +197,12 @@ class TestAccountStatementImportOnlinePlaid(common.TransactionCase):
         self.assertTrue(services)
         self.assertIn(("plaid", "Plaid.com"), services)
 
+    def test_unconfigured_provider_keeps_the_base_statement_hook(self):
+        provider = self.OnlineBankStatementProvider.new({"service": False})
+        since = datetime.datetime(2024, 5, 1)
+        until = datetime.datetime(2024, 6, 1)
+        self.assertEqual(provider._obtain_statement_data(since, until), [])
+
     @patch("plaid.api.plaid_api.PlaidApi.link_token_create")
     def test_action_sync_with_plaid(self, link_token_create):
         link_token_create.return_value = MagicMock(
