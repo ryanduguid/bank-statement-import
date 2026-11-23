@@ -40,12 +40,16 @@ class AccountStatementImport(models.TransientModel):
                 raise UserError(self.env._("Bad file/mapping: ") + str(exc)) from exc
         return super()._parse_file(data_file)
 
-    def _create_bank_statements(self, stmts_vals, result):
-        """Set balance_end_real if not already provided by the file."""
-        res = super()._create_bank_statements(stmts_vals, result)
-        statements = self.env["account.bank.statement"].browse(result["statement_ids"])
-        for statement in statements:
-            if not statement.balance_end_real:
-                amount = sum(statement.line_ids.mapped("amount"))
-                statement.balance_end_real = statement.balance_start + amount
-        return res
+    def _create_bank_statement(self, statement_values, creation_context):
+        """Calculate the closing balance when the file leaves it unspecified."""
+        reported_balance = statement_values.get("balance_end_real")
+        statement = super()._create_bank_statement(statement_values, creation_context)
+        has_reported_balance = (
+            self.sheet_mapping_id
+            and reported_balance is not None
+            and reported_balance is not False
+        )
+        if not has_reported_balance and not statement.balance_end_real:
+            amount = sum(statement.line_ids.mapped("amount"))
+            statement.balance_end_real = statement.balance_start + amount
+        return statement

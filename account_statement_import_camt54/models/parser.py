@@ -10,6 +10,12 @@ class CamtParser(models.AbstractModel):
 
     _inherit = "account.statement.import.camt.parser"
 
+    def parse_statement(self, ns, node):
+        statement = super().parse_statement(ns, node)
+        if node.tag == f"{{{ns}}}Ntfctn":
+            statement.setdefault("creation_context", {})["camt54_notification"] = True
+        return statement
+
     def _get_partner_ref(self, isr):
         ICP = self.env["ir.config_parameter"]
         ref_format = ICP.sudo().get_param("qrr_partner_ref")

@@ -8,7 +8,6 @@ import itertools
 import logging
 import math
 import re
-from collections.abc import Iterable
 from datetime import datetime
 from decimal import Decimal
 from io import BytesIO, StringIO
@@ -79,7 +78,7 @@ class AccountStatementImportSheetParser(models.TransientModel):
         if not lines:
             return currency_code, account_number, [{"transactions": []}]
 
-        lines = list(sorted(lines, key=lambda line: line["timestamp"]))
+        lines = sorted(lines, key=lambda line: line["timestamp"])
         first_line = lines[0]
         last_line = lines[-1]
         data = {
@@ -92,15 +91,10 @@ class AccountStatementImportSheetParser(models.TransientModel):
         }
 
         if mapping.balance_column:
-            balance_start = first_line["balance"]
-            balance_start -= first_line["amount"]
-            balance_end = last_line["balance"]
-            data.update(
-                {
-                    "balance_start": balance_start,
-                    "balance_end_real": balance_end,
-                }
-            )
+            if (balance := first_line.get("balance")) is not None:
+                data["balance_start"] = balance - first_line["amount"]
+            if (balance := last_line.get("balance")) is not None:
+                data["balance_end_real"] = balance
         transactions = list(
             itertools.chain.from_iterable(
                 map(lambda line: self._convert_line_to_transactions(line), lines)
@@ -111,31 +105,21 @@ class AccountStatementImportSheetParser(models.TransientModel):
         return currency_code, account_number, [data]
 
     def _get_column_indexes(self, header, column_name, mapping):
+        configured_columns = mapping[column_name]
+        if not configured_columns:
+            return []
         column_indexes = []
-        if (
-            mapping[column_name]
-            and isinstance(mapping[column_name], Iterable)
-            and "," in mapping[column_name]
-        ):
-            # We have to concatenate the values
-            column_names_or_indexes = mapping[column_name].split(",")
-        else:
-            column_names_or_indexes = [mapping[column_name]]
-        for column_name_or_index in column_names_or_indexes:
+        for column_name_or_index in configured_columns.split(","):
+            column_name_or_index = column_name_or_index.strip()
             if not column_name_or_index:
                 continue
-            column_index = None
             if mapping.no_header:
                 try:
-                    column_index = int(column_name_or_index)
-                # pylint: disable=except-pass
-                except Exception:
-                    pass
-                if column_index is not None:
-                    column_indexes.append(column_index)
+                    column_indexes.append(int(column_name_or_index))
+                except ValueError:
+                    continue
             else:
-                if column_name_or_index:
-                    column_indexes.append(header.index(column_name_or_index))
+                column_indexes.append(header.index(column_name_or_index))
         return column_indexes
 
     def _get_column_names(self):
@@ -263,14 +247,16 @@ class AccountStatementImportSheetParser(models.TransientModel):
     def _get_values_from_column(self, values, columns, column_name):
         indexes = columns[column_name]
         content_l = []
-        max_index = len(values) - 1
+        column_count = len(values)
         for index in indexes:
             if isinstance(index, int):
-                if index <= max_index:
+                if -column_count <= index < column_count:
                     content_l.append(values[index])
             else:
                 if index in values:
                     content_l.append(values[index])
+        if not content_l:
+            return None
         if all(isinstance(content, str) for content in content_l):
             return " ".join(content_l)
         return content_l[0]
@@ -318,7 +304,7 @@ class AccountStatementImportSheetParser(models.TransientModel):
             )
             currency = (
                 self._get_values_from_column(values, columns, "currency_column")
-                if columns["currency_column"]
+                if mapping.currency_column
                 else currency_code
             )
 
@@ -400,9 +386,25 @@ class AccountStatementImportSheetParser(models.TransientModel):
                 else None
             )
 
+            if mapping.currency_column and not str(currency or "").strip():
+                raise UserError(
+                    self.env._(
+                        "The mapped currency column is missing from a statement row."
+                    )
+                )
             if currency != currency_code:
                 continue
 
+            if (
+                timestamp is None
+                or isinstance(timestamp, str)
+                and not timestamp.strip()
+            ):
+                raise UserError(
+                    self.env._(
+                        "The mapped date column is missing from a statement row."
+                    )
+                )
             if isinstance(timestamp, str):
                 timestamp = datetime.strptime(timestamp, mapping.timestamp_format)
                 if timestamp.year == 1900:
@@ -414,10 +416,16 @@ class AccountStatementImportSheetParser(models.TransientModel):
                         year -= 1
                     timestamp = timestamp.replace(year=year)
 
-            if balance is not None:
-                balance = self._parse_decimal(balance, mapping)
+            balance = (
+                self._parse_decimal(balance, mapping)
+                if balance is not None and str(balance).strip()
+                else None
+            )
+            has_debit_credit = debit_credit is not None and bool(
+                str(debit_credit).strip()
+            )
 
-            if debit_credit is not None:
+            if has_debit_credit:
                 amount = abs(amount)
                 if debit_credit == mapping.debit_value:
                     amount = -amount
@@ -441,7 +449,7 @@ class AccountStatementImportSheetParser(models.TransientModel):
                     )
                 ):
                     amount = original_amount
-                    if debit_credit is not None:
+                    if has_debit_credit:
                         amount = (
                             -abs(amount)
                             if debit_credit == mapping.debit_value
@@ -450,6 +458,32 @@ class AccountStatementImportSheetParser(models.TransientModel):
                 original_amount = math.copysign(original_amount, amount)
             else:
                 original_amount = 0.0
+            if (
+                amount == 0
+                and amount_column is None
+                and debit_column is None
+                and credit_column is None
+                and (
+                    mapping.amount_column
+                    or mapping.amount_debit_column
+                    or mapping.amount_credit_column
+                )
+            ):
+                raise UserError(
+                    self.env._(
+                        "The mapped amount column is missing from a statement row."
+                    )
+                )
+            if (
+                amount
+                and mapping.amount_type == "absolute_value"
+                and not has_debit_credit
+            ):
+                raise UserError(
+                    self.env._(
+                        "Missing mapped debit or credit indicator in statement row."
+                    )
+                )
             if mapping.amount_inverse_sign:
                 amount = -amount
                 original_amount = -original_amount
@@ -558,9 +592,7 @@ class AccountStatementImportSheetParser(models.TransientModel):
 
     @api.model
     def _parse_decimal(self, value, mapping):
-        if isinstance(value, Decimal):
-            return float(value)
-        elif isinstance(value, int | float):
+        if isinstance(value, Decimal) or isinstance(value, int | float):
             return float(value)
         thousands, decimal = mapping._get_float_separators()
         # No digits and at most one sign, such as "-" or "$ -", is an empty
