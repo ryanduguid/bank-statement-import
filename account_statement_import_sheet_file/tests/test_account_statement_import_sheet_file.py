@@ -87,6 +87,162 @@ class TestAccountStatementImportSheetFile(Common):
                 self.assertEqual([line["amount"] for line in lines], [100, -12.50])
                 self.assertEqual(lines[0]["description"], "Deposit\ncontinued")
 
+    def _headerless_csv_mapping(self):
+        return self.AccountStatementImportSheetMapping.create(
+            {
+                "name": "Synthetic headerless CSV",
+                "no_header": True,
+                "header_lines_skip_count": 0,
+                "delimiter": "comma",
+                "float_decimal_sep": "dot",
+                "float_thousands_sep": "comma",
+                "timestamp_format": "%m/%d/%Y",
+                "timestamp_column": "0",
+                "amount_column": "1",
+                "description_column": "-5, -1, 4, unused",
+                "balance_column": "8",
+                "debit_credit_column": "-6",
+            }
+        )
+
+    def test_headerless_csv_ignores_indexes_outside_the_row(self):
+        mapping = self._headerless_csv_mapping()
+        data = b"09/01/2026,25.00,Deposit\n09/02/2026,-2.50,Fee\n"
+
+        lines = self.parser._parse_lines(mapping, data, "USD")
+
+        self.assertEqual([line["description"] for line in lines], ["Deposit", "Fee"])
+        self.assertEqual([line["amount"] for line in lines], [25, -2.50])
+        self.assertTrue(all("balance" not in line for line in lines))
+
+    def test_headerless_csv_requires_mapped_transaction_fields(self):
+        mapping = self._headerless_csv_mapping()
+        data = b"09/01/2026,25.00,Deposit\n"
+
+        mapping.currency_column = "9"
+        with self.assertRaisesRegex(UserError, "mapped currency column is missing"):
+            self.parser._parse_lines(mapping, data, "USD")
+
+        mapping.currency_column = "3"
+        padded_data = b"09/01/2026,25.00,Deposit, \n"
+        with self.assertRaisesRegex(UserError, "mapped currency column is missing"):
+            self.parser._parse_lines(mapping, padded_data, "USD")
+
+        mapping.write({"currency_column": False, "timestamp_column": "9"})
+        with self.assertRaisesRegex(UserError, "mapped date column is missing"):
+            self.parser._parse_lines(mapping, data, "USD")
+
+        mapping.timestamp_column = "0"
+        for missing_column in ("-9", "unused"):
+            mapping.amount_column = missing_column
+            with self.assertRaisesRegex(UserError, "mapped amount column is missing"):
+                self.parser._parse_lines(mapping, data, "USD")
+
+        mapping.write({"amount_type": "absolute_value", "amount_column": "1"})
+        with self.assertRaisesRegex(UserError, "mapped debit or credit indicator"):
+            self.parser._parse_lines(mapping, data, "USD")
+
+        mapping.write(
+            {
+                "amount_type": "distinct_credit_debit",
+                "amount_column": False,
+                "amount_debit_column": "-9",
+                "amount_credit_column": "-10",
+                "original_amount_column": "1",
+                "original_currency_column": "3",
+            }
+        )
+        with self.assertRaisesRegex(UserError, "mapped amount column is missing"):
+            self.parser._parse_lines(mapping, b"09/01/2026,25.00,Deposit,EUR\n", "USD")
+        lines = self.parser._parse_lines(
+            mapping, b"09/01/2026,25.00,Deposit,USD\n", "USD"
+        )
+        self.assertEqual(lines[0]["amount"], 25.0)
+
+    def _balance_sheet_mapping(self):
+        mapping = self.sample_statement_map
+        mapping.write(
+            {
+                "balance_column": "Balance",
+                "debit_credit_column": "Direction",
+                "original_currency_column": False,
+                "original_amount_column": False,
+                "partner_name_column": False,
+                "bank_account_column": False,
+            }
+        )
+        return mapping
+
+    def _import_synthetic_balance_sheet(self, data, mapping):
+        wizard = self.AccountStatementImport.with_context(
+            journal_id=self.journal.id, account_statement_import_sheet_file_test=True
+        ).create(
+            {
+                "statement_filename": "synthetic.csv",
+                "statement_file": b64encode(data),
+                "sheet_mapping_id": mapping.id,
+            }
+        )
+        wizard.import_file_button()
+        statement = self.AccountBankStatement.search(self.statement_domain)
+        self.assertEqual(len(statement), 1)
+        return statement
+
+    def test_sheet_missing_opening_balance_does_not_replace_a_real_zero_balance(self):
+        mapping = self._balance_sheet_mapping()
+        data = (
+            b"Date,Amount,Label,Direction,Balance\n"
+            b"09/01/2026,25.00,Deposit, , \n"
+            b"09/02/2026,-5.00,Withdrawal,,0.00\n"
+        )
+        parser = self.parser.with_context(journal_id=self.journal.id)
+
+        _currency, _account, statements = parser.parse(data, mapping, "synthetic.csv")
+
+        statement = statements[0]
+        self.assertNotIn("balance_start", statement)
+        self.assertEqual(statement["balance_end_real"], 0.0)
+        self.assertEqual(
+            [float(line["amount"]) for line in statement["transactions"]], [25.0, -5.0]
+        )
+        imported = self._import_synthetic_balance_sheet(data, mapping)
+        self.assertEqual(imported.balance_end, 20.0)
+        self.assertEqual(imported.balance_end_real, 0.0)
+
+    def test_sheet_calculates_an_absent_closing_balance_from_imported_movements(self):
+        mapping = self._balance_sheet_mapping()
+        data = (
+            b"Date,Amount,Label,Direction,Balance\n"
+            b"09/01/2026,25.00,Deposit,,45.00\n"
+            b"09/02/2026,-5.00,Withdrawal,,\n"
+        )
+        parser = self.parser.with_context(journal_id=self.journal.id)
+        _currency, _account, [statement] = parser.parse(data, mapping, "synthetic.csv")
+        self.assertEqual(statement["balance_start"], 20.0)
+        self.assertNotIn("balance_end_real", statement)
+
+        imported = self._import_synthetic_balance_sheet(data, mapping)
+        self.assertEqual(imported.balance_start, 20.0)
+        self.assertEqual(imported.balance_end_real, 40.0)
+
+    def test_csv_mapping_trims_spaces_around_column_names(self):
+        mapping = self.sample_statement_map
+        mapping.write(
+            {
+                "description_column": "Label, Notes, ",
+                "original_currency_column": False,
+                "original_amount_column": False,
+                "partner_name_column": False,
+                "bank_account_column": False,
+            }
+        )
+        data = b"Date,Amount,Label, Notes\n09/01/2026,25.00,Deposit,Customer ref\n"
+
+        lines = self.parser._parse_lines(mapping, data, "USD")
+
+        self.assertEqual(lines[0]["description"], "Deposit Customer ref")
+        self.assertEqual(lines[0]["amount"], 25)
+
     def test_whitespace_only_csv_fails_as_an_empty_file(self):
         with self.assertRaisesRegex(UserError, "Failed to parse file"):
             self.parser._parse_lines(self.sample_statement_map, b" \n \t\n \n", "USD")

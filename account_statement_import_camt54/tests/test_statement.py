@@ -79,6 +79,44 @@ class TestGenerateBankStatement(TransactionCase):
         with open(path, "rb") as datafile:
             return etree.parse(datafile)
 
+    def test_camt53_keeps_its_reported_closing_balance(self):
+        self.journal.transfer_line = True
+        content = (
+            etree.tostring(self._camt54_document())
+            .replace(b"camt.054.", b"camt.053.")
+            .replace(b"BkToCstmrDbtCdtNtfctn", b"BkToCstmrStmt")
+            .replace(b"<Ntfctn>", b"<Stmt>")
+            .replace(b"</Ntfctn>", b"</Stmt>")
+        )
+        document = etree.fromstring(content)
+        entry = document.find(".//{*}Stmt")
+        namespace = etree.QName(entry).namespace
+        entry.find("{*}Id").text = "Synthetic CAMT closing"
+        balance = etree.Element(f"{{{namespace}}}Bal")
+        entry.find("{*}Ntry").addprevious(balance)
+        balance_type = etree.SubElement(balance, f"{{{namespace}}}Tp")
+        code = etree.SubElement(balance_type, f"{{{namespace}}}CdOrPrtry")
+        etree.SubElement(code, f"{{{namespace}}}Cd").text = "CLBD"
+        etree.SubElement(balance, f"{{{namespace}}}Amt", Ccy="EUR").text = "15"
+        etree.SubElement(balance, f"{{{namespace}}}CdtDbtInd").text = "CRDT"
+
+        self.env["account.statement.import"].create(
+            {
+                "statement_filename": "synthetic.xml",
+                "statement_file": base64.b64encode(etree.tostring(document)),
+            }
+        ).import_file_button()
+
+        statement = self.env["account.bank.statement"].search(
+            [
+                ("journal_id", "=", self.journal.id),
+                ("name", "=", "Synthetic CAMT closing"),
+            ]
+        )
+        self.assertEqual(len(statement), 1)
+        self.assertEqual(statement.line_ids.mapped("amount"), [5.0])
+        self.assertEqual(statement.balance_end_real, 15.0)
+
     def _parse_camt54_transaction(self, document):
         currency, account, statements = self.env[
             "account.statement.import.camt.parser"
