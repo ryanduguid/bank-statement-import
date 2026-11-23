@@ -2,6 +2,7 @@
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 import json
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 from dateutil.relativedelta import relativedelta
 
@@ -75,13 +76,14 @@ class TestPontoInterface(common.TransactionCase):
     def test_expired_access_refreshes_headers_and_cached_token(self, requests_post):
         access = self._get_access_dict()
         access["token_expiration"] = fields.Datetime.now() - relativedelta(seconds=1)
+        renewed = uuid4().hex
         requests_post.return_value = MagicMock(
             status_code=201,
-            text=json.dumps({"access_token": "renewed-fixture", "expires_in": 120}),
+            text=json.dumps({"access_token": renewed, "expires_in": 120}),
         )
         headers = self.env["ponto.interface"]._get_request_headers(access)
-        self.assertEqual(headers["Authorization"], "Bearer renewed-fixture")
-        self.assertEqual(access["access_token"], "renewed-fixture")
+        self.assertEqual(headers["Authorization"], f"Bearer {renewed}")
+        self.assertEqual(access["access_token"], renewed)
         self.assertGreater(access["token_expiration"], fields.Datetime.now())
         requests_post.assert_called_once()
 
