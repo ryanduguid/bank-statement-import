@@ -226,14 +226,20 @@ test('bank inventory measures the Plaid action and retains an unloaded module', 
 test('inventory check ignores tests and tooling and refuses an unlisted asset', t => {
   const data = fixture(t, undefined, 'bank-statement-import');
   const git = (...args) => spawnSync('git', args, { cwd: data.copy, encoding: 'utf8', timeout: 15000 });
-  for (const relative of ['addon/tests/tour.esm.js', 'eslint.config.cjs', 'addon/README.md']) {
-    fs.mkdirSync(path.dirname(path.join(data.copy, relative)), { recursive: true });
-    fs.writeFileSync(path.join(data.copy, relative), '');
+  const previous = process.cwd();
+  process.chdir(data.copy);
+  try {
+    fs.mkdirSync('addon/tests', { recursive: true });
+    fs.writeFileSync('addon/tests/tour.esm.js', '');
+    fs.writeFileSync('addon/README.md', '');
+    fs.writeFileSync('eslint.config.cjs', '');
+    assert.equal(git('init', '-q').status, 0);
+    assert.equal(git('add', '.').status, 0);
+    checkInventory('bank-statement-import', data.copy);
+    fs.writeFileSync('addon/unlisted.js', '');
+    assert.equal(git('add', '.').status, 0);
+    assert.throws(() => checkInventory('bank-statement-import', data.copy), /Browser asset inventory changed/);
+  } finally {
+    process.chdir(previous);
   }
-  assert.equal(git('init', '-q').status, 0);
-  assert.equal(git('add', '.').status, 0);
-  checkInventory('bank-statement-import', data.copy);
-  fs.writeFileSync(path.join(data.copy, 'addon/unlisted.js'), '');
-  assert.equal(git('add', '.').status, 0);
-  assert.throws(() => checkInventory('bank-statement-import', data.copy), /Browser asset inventory changed/);
 });
