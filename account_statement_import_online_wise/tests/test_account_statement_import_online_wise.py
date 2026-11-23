@@ -255,25 +255,12 @@ class TestAccountBankAccountStatementImportOnlineWise(common.TransactionCase):
 
         def mock_response(url, api_key, private_key=None):
             if "/borderless-accounts?profileId=1234567891" in url:
-                payload = """[
-    {
-        "id": 42,
-        "balances": [
-            {
-                "currency": "EUR"
+                return [{"id": 42, "balances": [{"currency": "EUR"}]}]
+            self.assertIn("/borderless-accounts/42/statement.json", url)
+            return {
+                "transactions": [],
+                "endOfStatementBalance": {"value": Decimal("42.00"), "currency": "EUR"},
             }
-        ]
-    }
-]"""
-            elif "/borderless-accounts/42/statement.json" in url:
-                payload = """{
-    "transactions": [],
-    "endOfStatementBalance": {
-        "value": 42.00,
-        "currency": "EUR"
-    }
-}"""
-            return json.loads(payload, parse_float=Decimal)
 
         with mock.patch(
             _provider_class + "._wise_retrieve",

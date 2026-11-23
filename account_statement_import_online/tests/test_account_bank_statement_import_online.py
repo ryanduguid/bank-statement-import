@@ -405,6 +405,21 @@ class TestAccountBankAccountStatementImportOnline(common.TransactionCase):
         self._getExpectedStatements(0)
         self._getExpectedLines(0)
 
+    def test_debug_wizard_accepts_an_empty_provider_response(self):
+        start, end = datetime(2026, 9, 1), datetime(2026, 9, 1, 12)
+        self.provider.tz = "UTC"
+        wizard = self.OnlineBankStatementPullWizard.with_context(
+            active_model=self.provider._name, active_id=self.provider.id
+        ).create({"date_since": start, "date_until": end})
+        with mock.patch(mock_obtain_statement_data, return_value=None) as obtain_data:
+            action = wizard.action_debug()
+        obtain_data.assert_called_once()
+        self.assertEqual(
+            self.env[action["res_model"]].browse(action["res_id"]).data, "[]"
+        )
+        self._getExpectedStatements(0)
+        self._getExpectedLines(0)
+
     def test_compatibility_provider_pull_action_imports_transactions(self):
         self._check_compatibility_pull_action(self.provider)
 

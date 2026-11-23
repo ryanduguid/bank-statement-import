@@ -233,6 +233,14 @@ class TestPlaidLinkLifecycle(HttpCase):
         ]
         return response
 
+    def test_non_plaid_assets_reuse_the_standard_proxy(self):
+        url = "http://127.0.0.1/web/assets/fixture.js"
+        response = {"responseCode": 200}
+        with patch.object(HttpCase, "fetch_proxy", return_value=response) as delegate:
+            self.assertIs(self.fetch_proxy(url), response)
+        delegate.assert_called_once_with(url)
+        self.assertEqual(self.script_requests, 0)
+
     def test_load_failure_retries_and_pending_link_owns_its_callback(self):
         self.fail_first_load = True
         self.browser_js(

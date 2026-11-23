@@ -351,6 +351,27 @@ class TestAccountBankAccountStatementImportOnlineGocardless(common.TransactionCa
             self.provider.gocardless_requisition_expiration, current_expiration
         )
 
+    def test_link_wizard_exposes_the_configured_country_and_institutions(self):
+        self.provider.gocardless_country_id = self.env.ref("base.nl")
+        wizard = self.env["online.bank.statement.provider.existing"].create(
+            {"provider_id": self.provider.id}
+        )
+        institutions = [{"id": "SYNTHETIC_INSTITUTION", "name": "Fixture Bank"}]
+        with mock.patch(
+            _provider_class + "._gocardless_request",
+            return_value=(mock.Mock(status_code=200), institutions),
+        ) as request:
+            action = wizard.new_link()
+        request.assert_called_once_with("institutions", params={"country": "NL"})
+        self.assertEqual(action["tag"], "online_sync_institution_selector_gocardless")
+        self.assertEqual(action["context"]["institutions"], institutions)
+        self.assertEqual(action["context"]["provider_id"], self.provider.id)
+
+    def test_provider_service_list_and_fallback_are_available_to_extensions(self):
+        self.assertIn(("gocardless", "GoCardless"), self.provider.values_service())
+        other_provider = self.provider.new({"service": "dummy"})
+        self.assertEqual(other_provider._obtain_statement_data(self.now, self.now), [])
+
     def _http_transaction_response(self, status):
         response = requests.Response()
         response.status_code = status
