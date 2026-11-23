@@ -112,6 +112,25 @@ class TestOfxFile(common.TransactionCase):
         self.assertAlmostEqual(statement["balance_start"], 2436.56)
         self.assertAlmostEqual(statement["balance_end_real"], 2156.56)
 
+    def test_ofx_transaction_error_names_the_problem_without_posting(self):
+        path = "account_statement_import_ofx/tests/test_ofx_file/test_ofx.ofx"
+        with file_open(path, "rb") as source:
+            payload = base64.b64encode(source.read())
+        wizard = self.asi_model.create(
+            {"statement_file": payload, "statement_filename": "statement.ofx"}
+        )
+        statements = self.abs_model.search_count([])
+        with (
+            patch.object(
+                type(wizard),
+                "_prepare_ofx_transaction_line",
+                side_effect=ValueError("Invalid transaction amount"),
+            ),
+            self.assertRaisesRegex(UserError, "Invalid transaction amount"),
+        ):
+            wizard.import_file_button()
+        self.assertEqual(self.abs_model.search_count([]), statements)
+
     def test_ofx_file_import(self):
         ofx_path = "account_statement_import_ofx/tests/test_ofx_file/test_ofx.ofx"
         with file_open(ofx_path, "rb") as ofx_file:

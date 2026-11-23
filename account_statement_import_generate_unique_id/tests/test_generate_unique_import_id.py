@@ -126,3 +126,11 @@ class TestGenerateUniqueImportId(common.TransactionCase):
         self.assertEqual(line_other.unique_import_id, other_id)
         self.assertEqual(line_provided.unique_import_id, "provided")
         self.assertEqual(line_imported.unique_import_id, generated_id)
+
+    def test_action_generates_ids_without_warning_when_none_are_skipped(self):
+        self.journal.generate_unique_import_id = True
+        line = self._create_st_line()
+        action = self.journal.action_generate_unique_import_ids()
+        self.assertTrue(line.unique_import_id)
+        self.assertEqual(action["params"]["type"], "success")
+        self.assertIn("1 statement lines got an import ID", action["params"]["message"])
