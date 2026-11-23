@@ -304,16 +304,18 @@ class TestAccountBankAccountStatementImportOnlineWise(common.TransactionCase):
         provider.origin = "1234567891"
         provider.password = "API_KEY"
 
-        with mock.patch(
-            _provider_class + "._wise_retrieve",
-            return_value=[],
-        ):
-            data = provider._obtain_statement_data(
-                self.now - relativedelta(hours=1),
-                self.now,
-            )
-
-        self.assertFalse(data)
+        for response in ([], [{"id": 42, "balances": [{"currency": "USD"}]}]):
+            with (
+                self.subTest(response=response),
+                mock.patch(
+                    _provider_class + "._wise_retrieve", return_value=response
+                ) as retrieve,
+            ):
+                data = provider._obtain_statement_data(
+                    self.now - relativedelta(hours=1), self.now
+                )
+                self.assertIsNone(data)
+                retrieve.assert_called_once()
 
     def test_update_public_key(self):
         journal = self.AccountJournal.create(
@@ -430,6 +432,40 @@ edF6byMgXSzgOWYuRPXwmHpBQV0GiexQUAxVyUzaVWfil69LaFfXaw==
                 )
                 self.assertEqual([line["amount"] for line in lines], expected_amounts)
                 self.assertEqual(lines[0]["payment_ref"], "TRANSFER-100")
+
+    def test_optional_transaction_details_and_whole_foreign_amounts(self):
+        (self.currency_eur | self.currency_usd).active = True
+        transaction = {
+            "date": "2000-01-01T00:00:00.000Z",
+            "referenceNumber": "TRANSFER-100",
+            "exchangeDetails": {
+                "fromAmount": {"value": 10, "currency": "EUR"},
+                "toAmount": {"value": 11, "currency": "USD"},
+            },
+        }
+        for transaction_type, amount, currency, details, foreign in (
+            ("DEBIT", -10, "EUR", None, self.currency_usd),
+            ("CREDIT", 11, "USD", {"merchant": None}, self.currency_eur),
+        ):
+            with self.subTest(transaction_type=transaction_type):
+                [line] = self.wise_parse_transaction(
+                    json.dumps(
+                        {
+                            **transaction,
+                            "type": transaction_type,
+                            "amount": {"value": amount, "currency": currency},
+                            "details": details,
+                        }
+                    )
+                )
+                self.assertEqual(line["amount"], str(amount))
+                self.assertEqual(line["payment_ref"], "TRANSFER-100")
+                self.assertNotIn("partner_name", line)
+                self.assertEqual(line["foreign_currency_id"], foreign.id)
+                self.assertEqual(
+                    line["amount_currency"],
+                    "-11" if transaction_type == "DEBIT" else "10",
+                )
 
     def test_transaction_parse_1(self):
         lines = self.wise_parse_transaction(

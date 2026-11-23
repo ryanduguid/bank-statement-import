@@ -99,10 +99,7 @@ class OnlineBankStatementProviderWise(models.Model):
         if not data:
             return None
         borderless_account = data[0]["id"]
-        balance = list(
-            filter(lambda balance: balance["currency"] == currency, data[0]["balances"])
-        )
-        if not balance:
+        if not any(balance["currency"] == currency for balance in data[0]["balances"]):
             return None
 
         # Notes on /statement endpoint:
@@ -174,7 +171,7 @@ class OnlineBankStatementProviderWise(models.Model):
     def _wise_transaction_to_lines(self, transaction):
         transaction_type = transaction["type"]
         reference_number = transaction["referenceNumber"]
-        details = transaction.get("details", {})
+        details = transaction.get("details") or {}
         exchange_details = transaction.get("exchangeDetails")
         recipient = details.get("recipient")
         total_fees = transaction.get("totalFees") or {}
@@ -207,8 +204,7 @@ class OnlineBankStatementProviderWise(models.Model):
                 line.update({"partner_name": recipient["name"]})
             if "bankAccount" in recipient:
                 line.update({"account_number": recipient["bankAccount"]})
-        elif "merchant" in details:
-            merchant = details["merchant"]
+        elif merchant := details.get("merchant"):
             if "name" in merchant:
                 line.update({"partner_name": merchant["name"]})
         else:
@@ -217,19 +213,11 @@ class OnlineBankStatementProviderWise(models.Model):
             if "senderAccount" in details:
                 line.update({"account_number": details["senderAccount"]})
         if exchange_details:
-            to_amount = exchange_details["toAmount"]
-            from_amount = exchange_details["fromAmount"]
-            other_amount_value = (
-                to_amount["value"]
-                if to_amount["currency"] != amount["currency"]
-                else from_amount["value"]
-            )
-            other_currency_name = (
-                to_amount["currency"]
-                if to_amount["currency"] != amount["currency"]
-                else from_amount["currency"]
-            )
-            other_amount_value = other_amount_value.copy_abs()
+            other_amount = exchange_details["toAmount"]
+            if other_amount["currency"] == amount["currency"]:
+                other_amount = exchange_details["fromAmount"]
+            other_currency_name = other_amount["currency"]
+            other_amount_value = Decimal(other_amount["value"]).copy_abs()
             if amount_value.is_signed():
                 other_amount_value = other_amount_value.copy_negate()
             other_currency = self.env["res.currency"].search(
