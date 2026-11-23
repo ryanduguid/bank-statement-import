@@ -5,6 +5,7 @@
 import logging
 
 from odoo import _, api, fields, models
+from odoo.exceptions import UserError
 
 _logger = logging.getLogger(__name__)
 
@@ -41,10 +42,7 @@ class AccountJournal(models.Model):
         OnlineBankStatementProvider = self.env["online.bank.statement.provider"]
         for journal in self.filtered("online_bank_statement_provider"):
             service = journal.online_bank_statement_provider
-            if (
-                journal.online_bank_statement_provider_id
-                and service == journal.online_bank_statement_provider_id.service
-            ):
+            if service == journal._get_linked_online_provider().service:
                 # Provider already exists.
                 continue
             # Use existing or create new provider for service.
@@ -87,10 +85,36 @@ class AccountJournal(models.Model):
             vals["online_bank_statement_provider"] = False
             vals["online_bank_statement_provider_id"] = False
 
-    def action_online_bank_statements_pull_wizard(self):
-        """This method is also kept for compatibility reasons."""
+    def _get_linked_online_provider(self):
         self.ensure_one()
-        provider = self.online_bank_statement_provider_id
+        return self.online_bank_statement_provider_id.filtered(
+            lambda provider: provider.journal_id == self
+        )
+
+    def _clear_online_provider_link(self):
+        online_journals = self.filtered(lambda j: j.bank_statements_source == "online")
+        if online_journals:
+            online_journals.write({"bank_statements_source": "undefined"})
+        other_journals = self - online_journals
+        if other_journals:
+            other_journals.write(
+                {
+                    "online_bank_statement_provider": False,
+                    "online_bank_statement_provider_id": False,
+                }
+            )
+
+    def _get_online_provider_for_pull(self):
+        provider = self._get_linked_online_provider()
+        if not provider:
+            raise UserError(
+                _("Configure an online statement provider for this journal.")
+            )
+        return provider
+
+    def action_online_bank_statements_pull_wizard(self):
+        """Keep the journal entry point for compatibility."""
+        provider = self._get_online_provider_for_pull()
         return provider.action_online_bank_statements_pull_wizard()
 
     def action_open_online_bank_statement_provider(self):
@@ -99,6 +123,6 @@ class AccountJournal(models.Model):
             "name": "Statement Provider",
             "view_mode": "form",
             "res_model": "online.bank.statement.provider",
-            "res_id": self.online_bank_statement_provider_id.id,
+            "res_id": self._get_linked_online_provider().id,
             "target": "current",
         }

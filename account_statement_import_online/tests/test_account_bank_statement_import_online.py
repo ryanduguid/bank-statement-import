@@ -12,6 +12,7 @@ from dateutil.relativedelta import relativedelta
 from odoo_test_helper import FakeModelLoader
 
 from odoo import _, fields
+from odoo.exceptions import UserError
 from odoo.modules import neutralize
 from odoo.tests import common
 from odoo.tools import mute_logger
@@ -563,6 +564,66 @@ class TestAccountBankAccountStatementImportOnline(common.TransactionCase):
         self.assertEqual(self.journal.bank_statements_source, "undefined")
         self.assertEqual(self.journal.online_bank_statement_provider, False)
         self.assertEqual(self.journal.online_bank_statement_provider_id.id, False)
+
+    def test_move_provider_updates_both_journals(self):
+        destination = self.AccountJournal.create(
+            {
+                "name": "Destination Bank",
+                "type": "bank",
+                "code": "BANK2",
+                "bank_statements_source": "undefined",
+            }
+        )
+
+        self.provider.journal_id = destination
+
+        self.assertEqual(self.journal.bank_statements_source, "undefined")
+        self.assertFalse(self.journal.online_bank_statement_provider_id)
+        self.assertFalse(self.journal.online_bank_statement_provider)
+        self.assertEqual(destination.bank_statements_source, "online")
+        self.assertEqual(destination.online_bank_statement_provider_id, self.provider)
+        self.assertEqual(
+            destination.online_bank_statement_provider, self.provider.service
+        )
+        action = destination.action_online_bank_statements_pull_wizard()
+        self.assertEqual(action["context"]["active_id"], self.provider.id)
+
+    def test_stale_journal_provider_cannot_pull(self):
+        stale_journal = self.AccountJournal.create(
+            {
+                "name": "Stale Bank",
+                "type": "bank",
+                "code": "BANK2",
+                "bank_statements_source": "online",
+                "online_bank_statement_provider_id": self.provider.id,
+            }
+        )
+        wizard = self.OnlineBankStatementPullWizard.with_context(
+            active_model="account.journal",
+            active_id=stale_journal.id,
+        ).create({})
+        error = "Configure an online statement provider for this journal"
+
+        with self.assertRaisesRegex(UserError, error):
+            stale_journal.action_online_bank_statements_pull_wizard()
+        with self.assertRaisesRegex(UserError, error):
+            wizard.action_pull()
+        action = stale_journal.action_open_online_bank_statement_provider()
+        self.assertFalse(action["res_id"])
+
+        stale_journal.online_bank_statement_provider = self.provider.service
+        replacement = wizard._get_provider()
+        self.assertEqual(replacement.journal_id, stale_journal)
+        self.assertNotEqual(replacement, self.provider)
+
+    def test_unlink_provider_keeps_other_statement_source(self):
+        self.journal.bank_statements_source = "manual"
+        self.journal.online_bank_statement_provider_id = self.provider
+
+        self.provider.unlink()
+
+        self.assertEqual(self.journal.bank_statements_source, "manual")
+        self.assertFalse(self.journal.online_bank_statement_provider_id)
 
     def test_neutralize(self):
         """Neutralizing the database deactivates the providers."""

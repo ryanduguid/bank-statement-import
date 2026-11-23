@@ -30,7 +30,7 @@ class OnlineBankStatementPullWizard(models.TransientModel):
         active_id = self.env.context.get("active_id")
         active_record = self.env[active_model].browse(active_id)
         if active_model == "account.journal":
-            provider = active_record.online_bank_statement_provider_id
+            provider = active_record._get_online_provider_for_pull()
         else:
             provider = active_record
         return provider
