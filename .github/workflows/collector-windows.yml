@@ -1,0 +1,44 @@
+name: Windows coverage collector
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - "18.0*"
+  push:
+    branches:
+      - "18.0"
+      - "18.0-ocabot-*"
+
+jobs:
+  collector-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.15.2"
+      - name: Check the Python coverage collector
+        shell: pwsh
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/collector.coverage
+        run: |
+          python -m pip install --disable-pip-version-check coverage==7.16.2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m coverage run --rcfile=.github/coverage/coverage.ini -m unittest discover -s .github/coverage -p 'test_*.py' -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m coverage combine --rcfile=.github/coverage/coverage.ini --keep
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m coverage xml --rcfile=.github/coverage/coverage.ini -o "$env:RUNNER_TEMP/collector-python.xml"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
+        with:
+          use_oidc: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          fail_ci_if_error: true
+          disable_search: true
+          files: ${{ runner.temp }}/collector-python.xml
