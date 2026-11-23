@@ -129,6 +129,64 @@ class TestParserCommon(TransactionCase):
 class TestParser(TestParserCommon):
     """Tests for the camt parser itself."""
 
+    def test_rejects_unrecognised_xml_and_incomplete_camt(self):
+        prefix = '<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.04">'
+        for data, error in (
+            ("", "Not a valid xml file"),
+            ("<Document/>", "no camt"),
+            (
+                prefix.replace(".053.", ".051.") + "</Document>",
+                "no camt 052 or 053 or 054",
+            ),
+            (prefix + "</Document>", "expected CAMT BkToCstmrStmt report"),
+            (
+                prefix + "<Other><GrpHdr/><Stmt/></Other></Document>",
+                "expected CAMT BkToCstmrStmt report",
+            ),
+            (prefix + "<BkToCstmrStmt/></Document>", "expected GrpHdr"),
+            (
+                prefix + "<BkToCstmrStmt><Stmt/></BkToCstmrStmt></Document>",
+                "expected GrpHdr",
+            ),
+            (
+                prefix + "<BkToCstmrStmt><GrpHdr/></BkToCstmrStmt></Document>",
+                "expected CAMT Stmt statement",
+            ),
+        ):
+            with self.subTest(data=data), self.assertRaisesRegex(ValueError, error):
+                self.parser.parse(data.encode("utf-8"))
+
+    def test_accepts_empty_camt_statements_with_both_namespace_prefixes(self):
+        for version, report, statement in (
+            ("052", "BkToCstmrAcctRpt", "Rpt"),
+            ("053", "BkToCstmrStmt", "Stmt"),
+            ("054", "BkToCstmrDbtCdtNtfctn", "Ntfctn"),
+        ):
+            for prefix in ("urn:iso:std:iso:20022:tech:xsd:", "ISO:"):
+                data = (
+                    f'<Document xmlns="{prefix}camt.{version}.001.04">'
+                    f"<{report}><GrpHdr/><{statement}/></{report}></Document>"
+                )
+                with self.subTest(version=version, prefix=prefix):
+                    self.assertEqual(
+                        self.parser.parse(data.encode("utf-8")), (None, None, [])
+                    )
+
+    def test_ignores_xml_comments_and_non_statement_siblings(self):
+        document = etree.fromstring(DOMESTIC_INTERIM_CAMT)
+        report = document[0]
+        other = deepcopy(report[1])
+        other.tag = f"{{{etree.QName(document).namespace}}}SplmtryData"
+        report.append(other)
+        document.insert(0, etree.Comment("Before the report"))
+        report.insert(0, etree.Comment("Before the header"))
+        report.append(etree.Comment("After the statement"))
+
+        self.assertEqual(
+            self.parser.parse(etree.tostring(document)),
+            self.parser.parse(DOMESTIC_INTERIM_CAMT),
+        )
+
     def test_mixed_accounts_and_currencies_keep_separate_groups(self):
         path = file_path("account_statement_import_camt/tests/samples/test-camt053")
         original = Path(path).read_bytes()
