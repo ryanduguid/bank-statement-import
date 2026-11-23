@@ -9,6 +9,12 @@ from lxml import etree
 
 from odoo import api, models
 
+CAMT_REPORT_TAGS = {
+    "052": ("BkToCstmrAcctRpt", "Rpt"),
+    "053": ("BkToCstmrStmt", "Stmt"),
+    "054": ("BkToCstmrDbtCdtNtfctn", "Ntfctn"),
+}
+
 
 class AccountStatementImportCamtParser(models.AbstractModel):
     _name = "account.statement.import.camt.parser"
@@ -409,53 +415,65 @@ class AccountStatementImportCamtParser(models.AbstractModel):
         for entry_node in entry_nodes:
             transactions.extend(self.parse_entry(ns, entry_node))
         result["transactions"] = transactions
-        result["date"] = None
-        if transactions:
-            result["date"] = sorted(
-                transactions, key=lambda x: x["date"], reverse=True
-            )[0]["date"]
+        result["date"] = max((line["date"] for line in transactions), default=None)
         return result
 
     def check_version(self, ns, root):
-        """Validate validity of camt file."""
-        # Check whether it is camt at all:
-        re_camt = re.compile(r"(^urn:iso:std:iso:20022:tech:xsd:camt." r"|^ISO:camt.)")
-        if not re_camt.search(ns):
-            raise ValueError("no camt: " + ns)
-        # Check whether version 052 ,053 or 054:
-        re_camt_version = re.compile(
-            r"(^urn:iso:std:iso:20022:tech:xsd:camt.054."
-            r"|^urn:iso:std:iso:20022:tech:xsd:camt.053."
-            r"|^urn:iso:std:iso:20022:tech:xsd:camt.052."
-            r"|^ISO:camt.054."
-            r"|^ISO:camt.053."
-            r"|^ISO:camt.052.)"
+        """Validate the CAMT message and return its statements."""
+        family = re.match(
+            r"(?:urn:iso:std:iso:20022:tech:xsd:|ISO:)camt\.([^.]+)\.", ns or ""
         )
-        if not re_camt_version.search(ns):
+        if not family:
+            raise ValueError(f"no camt: {ns or ''}")
+        message = CAMT_REPORT_TAGS.get(family[1])
+        if message is None:
             raise ValueError("no camt 052 or 053 or 054:" + ns)
-        # Check GrpHdr element:
-        root_0_0 = root[0][0].tag[len(ns) + 2 :]  # strip namespace
-        if root_0_0 != "GrpHdr":
-            raise ValueError("expected GrpHdr, got:", root_0_0)
+        report_tag, statement_tag = message
+        report = root.find("*")
+        if (
+            root.tag != f"{{{ns}}}Document"
+            or report is None
+            or report.tag != f"{{{ns}}}{report_tag}"
+        ):
+            raise ValueError(f"expected CAMT {report_tag} report")
+        header = report.find("*")
+        tag = header.tag if header is not None else None
+        if tag != f"{{{ns}}}GrpHdr":
+            raise ValueError("expected GrpHdr, got:", tag)
+        statements = report.findall(f"{{{ns}}}{statement_tag}")
+        if not statements:
+            raise ValueError(f"expected CAMT {statement_tag} statement")
+        return statements
 
     def parse(self, data):
         """Parse a camt.052 or camt.053 or camt.054 file."""
+        parser_options = {
+            "resolve_entities": False,
+            "no_network": True,
+            "load_dtd": False,
+            "dtd_validation": False,
+        }
         try:
-            root = etree.fromstring(data, parser=etree.XMLParser(recover=True))
+            root = etree.fromstring(
+                data, parser=etree.XMLParser(recover=True, **parser_options)
+            )
         except etree.XMLSyntaxError:
             try:
                 # ABNAmro is known to mix up encodings
-                root = etree.fromstring(data.decode("iso-8859-15").encode("utf-8"))
+                root = etree.fromstring(
+                    data.decode("iso-8859-15").encode("utf-8"),
+                    parser=etree.XMLParser(**parser_options),
+                )
             except etree.XMLSyntaxError:
                 root = None
         if root is None:
             raise ValueError("Not a valid xml file, or not an xml file at all.")
-        ns = root.tag[1 : root.tag.index("}")]
-        self.check_version(ns, root)
+        ns = etree.QName(root).namespace
+        statement_nodes = self.check_version(ns, root)
         currency = None
         account_number = None
         grouped = {}
-        for node in root[0][1:]:
+        for node in statement_nodes:
             statement = self.parse_statement(ns, node)
             if len(statement["transactions"]):
                 # A statement that names no currency or account keeps the last
