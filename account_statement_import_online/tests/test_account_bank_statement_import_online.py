@@ -100,6 +100,15 @@ class TestAccountBankAccountStatementImportOnline(common.TransactionCase):
         self.provider.with_context(step={"hours": 8})._scheduled_pull()
         self._getExpectedStatements(1)
 
+    def test_scheduled_pull_creates_standalone_lines(self):
+        self.provider.write(
+            {"next_run": self.now - relativedelta(days=15), "create_statement": False}
+        )
+        self.provider.with_context(step={"hours": 8})._scheduled_pull()
+        self._getExpectedStatements(0)
+        self._getExpectedLines(3)
+        self.assertTrue(self.provider.last_successful_run)
+
     def test_scheduled_pull_skips_inactive_and_future_providers(self):
         for active, next_run in (
             (False, self.now - timedelta(days=2)),
@@ -665,8 +674,8 @@ class TestAccountBankAccountStatementImportOnline(common.TransactionCase):
         with mock.patch(mock_obtain_statement_data) as mock_data:
             mock_data.side_effect = [
                 self._get_statement_line_data(date(2021, 8, 10)),
-                ([], {}),  # August 8th, doesn't have statement
-                ([], {}),  # August 9th, doesn't have statement
+                None,  # August 11th, provider returned no payload.
+                ([], {}),  # August 12th, provider returned no transactions.
                 self._get_statement_line_data(date(2021, 8, 13)),
             ]
             self.provider._pull(datetime(2021, 8, 10), datetime(2021, 8, 14))
