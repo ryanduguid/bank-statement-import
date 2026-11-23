@@ -263,3 +263,22 @@ class TestAccountBankStatementImportMoveLine(AccountTestInvoicingCommon):
         self.assertIs(wizard.create_statement_lines(), True)
         self.assertFalse(wizard.statement_id)
         self.assertEqual(self.env["account.bank.statement"].search([]), before)
+
+    def test_move_date_filter_without_a_partner_and_with_a_stale_statement(self):
+        self.invoice.action_post()
+        receivable = self.invoice.line_ids.filtered(
+            lambda line: line.account_id.account_type == "asset_receivable"
+        )
+        wizard = (
+            self.env["account.statement.line.create"]
+            .with_context(active_model="account.bank.statement", active_id=-1)
+            .create(
+                {"date_type": "move", "move_date": receivable.date - timedelta(days=1)}
+            )
+        )
+        self.assertFalse(wizard.statement_id)
+        wizard.populate()
+        self.assertNotIn(receivable, wizard.move_line_ids)
+        wizard.move_date = receivable.date
+        wizard.populate()
+        self.assertIn(receivable, wizard.move_line_ids)

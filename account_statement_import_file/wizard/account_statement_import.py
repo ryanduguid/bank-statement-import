@@ -226,9 +226,19 @@ class AccountStatementImport(models.TransientModel):
     @api.model
     def _match_journal(self, account_number, currency):
         company = self.env.company
-        journal_obj = self.env["account.journal"]
+        selected_journal_id = self.env.context.get("journal_id")
+        selected_journal = (
+            self.env["account.journal"].browse(selected_journal_id).exists()
+        )
+        if selected_journal_id and not selected_journal:
+            raise UserError(
+                self.env._(
+                    "The selected bank journal no longer exists. "
+                    "Start the import from an existing journal."
+                )
+            )
         if not account_number:  # exemple : QIF
-            if not self.env.context.get("journal_id"):
+            if not selected_journal:
                 raise UserError(
                     self.env._(
                         "The format of this bank statement file doesn't "
@@ -237,21 +247,19 @@ class AccountStatementImport(models.TransientModel):
                         "in the dashboard."
                     )
                 )
-            journal = journal_obj.browse(self.env.context.get("journal_id"))
+            journal = selected_journal
         else:
             sanitized_account_number = sanitize_account_number(account_number)
 
             journal = self._find_bank_journal(sanitized_account_number)
-            ctx_journal_id = self.env.context.get("journal_id")
-            if journal and ctx_journal_id and journal.id != ctx_journal_id:
-                ctx_journal = journal_obj.browse(ctx_journal_id)
+            if journal and selected_journal and journal != selected_journal:
                 raise UserError(
                     self.env._(
                         "The journal found for the file (%(journal_match)s) is"
                         " different from the selected journal "
                         "(%(journal_selected)s).",
                         journal_match=journal.display_name,
-                        journal_selected=ctx_journal.display_name,
+                        journal_selected=selected_journal.display_name,
                     )
                 )
             if not journal:

@@ -362,3 +362,30 @@ class TestAccountStatementImportFile(common.TransactionCase):
         )
         with self.assertRaises(UserError):
             import_wizard.import_single_statement(vals, result)
+
+    def test_import_rejects_stale_journal_and_currency_mismatch(self):
+        journal = self.journal_1
+        journal.currency_id = self.eur_currency
+        usd = self.env.ref("base.USD")
+        usd.active = True
+        statements = [{"transactions": [{"date": date(2026, 1, 2), "amount": 10}]}]
+        result = {"statement_ids": [], "notifications": []}
+        for journal_id, account_number, error in (
+            (-1, False, "selected bank journal no longer exists"),
+            (
+                -1,
+                self.bank_account.acc_number,
+                "selected bank journal no longer exists",
+            ),
+            (journal.id, False, "not the same as the currency of the journal"),
+        ):
+            with (
+                self.subTest(journal_id=journal_id, account_number=account_number),
+                self.assertRaisesRegex(UserError, error),
+            ):
+                self.import_wizard.with_context(
+                    journal_id=journal_id
+                ).import_single_statement(
+                    (usd.name, account_number, statements), result
+                )
+        self.assertEqual(result["statement_ids"], [])
