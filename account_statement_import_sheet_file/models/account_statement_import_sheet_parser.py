@@ -534,12 +534,26 @@ class AccountStatementImportSheetParser(models.TransientModel):
         }
 
         if original_currency:
-            original_currency = self.env["res.currency"].search(
-                [("name", "=", original_currency)],
-                limit=1,
+            foreign_currency = (
+                self.env["res.currency"]
+                .with_context(active_test=False)
+                .search([("name", "=", original_currency)], limit=1)
             )
-            if original_currency:
-                transaction["foreign_currency_id"] = original_currency.id
+            if not foreign_currency:
+                raise UserError(
+                    self.env._(
+                        "The original currency '%s' is unknown in Odoo.",
+                        original_currency,
+                    )
+                )
+            if not foreign_currency.active:
+                raise UserError(
+                    self.env._(
+                        "Activate the original currency '%s' in Odoo before importing.",
+                        original_currency,
+                    )
+                )
+            transaction["foreign_currency_id"] = foreign_currency.id
             if original_amount:
                 transaction["amount_currency"] = str(original_amount)
 

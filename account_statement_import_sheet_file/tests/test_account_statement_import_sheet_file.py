@@ -4,7 +4,7 @@
 # Copyright 2025 Jacques-Etienne Baudoux (BCIM) <je@bcim.be>
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 
-from base64 import b64encode
+from base64 import b64decode, b64encode
 from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
@@ -521,6 +521,21 @@ class TestAccountStatementImportSheetFile(Common):
         self.assertEqual(line.foreign_currency_id, self.currency_eur)
         line_amount_currency = float_round(line.amount_currency, precision_digits=1)
         self.assertEqual(line_amount_currency, 1000.0)
+
+    def test_archived_original_currency_requires_activation_before_import(self):
+        self.currency_eur.active = False
+        wizard = self._get_import_wizard("fixtures/original_currency.csv")
+        with self.assertRaisesRegex(UserError, "Activate the original currency 'EUR'"):
+            wizard.import_file_button()
+        self.assertFalse(self.AccountBankStatement.search(self.statement_domain))
+
+    def test_unknown_original_currency_rejects_the_import(self):
+        wizard = self._get_import_wizard("fixtures/original_currency.csv")
+        payload = b64decode(wizard.statement_file).replace(b'"EUR"', b'"ZZZ"')
+        wizard.statement_file = b64encode(payload)
+        with self.assertRaisesRegex(UserError, "original currency 'ZZZ'"):
+            wizard.import_file_button()
+        self.assertFalse(self.AccountBankStatement.search(self.statement_domain))
 
     def test_original_currency_no_header(self):
         no_header_statement_map = self.AccountStatementImportSheetMapping.create(

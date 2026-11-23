@@ -374,7 +374,12 @@ class OnlineBankStatementProviderPayPal(models.Model):
             as_of_timestamp.isoformat() + "Z",
         )
         data = self._paypal_retrieve(url, token)
-        available_balance = data["balances"][0].get("available_balance")
+        balances = data.get("balances")
+        if not isinstance(balances, list) or not balances:
+            raise UserError(
+                self.env._("PayPal did not return a balance for %s.", currency)
+            )
+        available_balance = balances[0].get("available_balance")
         if not available_balance:
             return Decimal()
         return Decimal(available_balance["value"])
